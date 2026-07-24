@@ -87,12 +87,12 @@ class UnifiedGamingCard extends LitElement {
           for (const [entityId, state] of Object.entries(hass.states)) {
             if (entityId === prefix || !entityId.startsWith(prefix + "_")) continue;
             const suffix = entityId.slice(prefix.length + 1);
-            if (suffix === "game") entry.discord_game = state.state;
+            if (suffix === "game") entry.discord_game = state.state !== "unknown" && state.state !== "None" ? state.state : null;
             else if (suffix === "game_image_header") entry.discord_game_images.header = state.state;
             else if (suffix === "game_image_capsule_231x87") entry.discord_game_images.capsule = state.state;
             else if (suffix === "game_image_large") entry.discord_game_images.large = state.state;
             else if (suffix === "game_image_library_hero") entry.discord_game_images.hero = state.state;
-            else if (suffix === "voice_channel") entry.discord_voice = state.state;
+            else if (suffix === "voice_channel") entry.discord_voice = state.state !== "unknown" ? state.state : null;
             else if (suffix === "voice_self_mute") entry.discord_voice_mute = state.state === "True";
             else if (suffix === "voice_self_deaf") entry.discord_voice_deaf = state.state === "True";
             else if (suffix === "voice_self_stream") entry.discord_voice_stream = state.state === "True";
@@ -368,8 +368,8 @@ class UnifiedGamingCard extends LitElement {
     const filtered = this._filterByStatus(this._entities);
     const groups = this._sortByStatus(filtered);
     const allUsers = [...groups.online, ...groups.idle, ...groups.dnd, ...groups.unavailable, ...groups.offline];
-    const inVoice = allUsers.filter(e => e.discord_voice);
-    const notInVoice = allUsers.filter(e => !e.discord_voice);
+    const inVoice = allUsers.filter(e => e.discord_voice && e.discord_voice !== "unknown");
+    const notInVoice = allUsers.filter(e => !e.discord_voice || e.discord_voice === "unknown");
     let offlineNotInVoice = notInVoice.filter(e => e.merged_status.status === "offline");
     if (maxOffline > 0) offlineNotInVoice = offlineNotInVoice.slice(0, maxOffline);
     let activeNotInVoice = notInVoice.filter(e => e.merged_status.status !== "offline");
