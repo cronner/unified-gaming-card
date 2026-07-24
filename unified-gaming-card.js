@@ -30,7 +30,6 @@ class UnifiedGamingCard extends LitElement {
       max_online: 0,
       max_offline: 0,
       sort_by: "status",
-      show_game_badge: false,
       click_action: "popup",
       click_action_target: "",
       compact_mode: false,
@@ -61,7 +60,7 @@ class UnifiedGamingCard extends LitElement {
       const entry = {
         name: profile.name || "Unknown",
         discord_entity: null,
-        steam_entity: null,
+        steam_entities: [],
         discord_state: null,
         discord_game: null,
         discord_game_images: {},
@@ -70,11 +69,10 @@ class UnifiedGamingCard extends LitElement {
         discord_voice_deaf: false,
         discord_voice_stream: false,
         discord_avatar: null,
-        steam_state: null,
-        steam_game: null,
-        steam_game_images: {},
-        steam_avatar: null,
-        _steam_base_url: null,
+        steam_states: [],
+        steam_games: [],
+        steam_game_images: [],
+        steam_avatars: [],
       };
 
       // Discord entity lookup
@@ -102,30 +100,29 @@ class UnifiedGamingCard extends LitElement {
         }
       }
 
-      // Steam entity lookup
-      if (profile.steam) {
-        const steamState = hass.states[profile.steam];
+      // Steam entity lookup (supports string or array)
+      const steamIds = Array.isArray(profile.steam) ? profile.steam : (profile.steam ? [profile.steam] : []);
+      for (const steamId of steamIds) {
+        const steamState = hass.states[steamId];
         if (steamState) {
-          entry.steam_entity = steamState;
+          entry.steam_entities.push(steamState);
           const rawState = steamState.state;
           const stateMap = { online: "online", away: "idle", snooze: "dnd", offline: "offline" };
-          entry.steam_state = stateMap[rawState] || "offline";
-          entry.steam_avatar = steamState.attributes?.entity_picture || null;
-          entry.steam_game = steamState.attributes?.game || null;
-          if (steamState.attributes?.game_image_header) {
-            entry.steam_game_images.header = steamState.attributes.game_image_header;
-          }
-          if (steamState.attributes?.game_image_main) {
-            entry.steam_game_images.main = steamState.attributes.game_image_main;
-          }
+          entry.steam_states.push(stateMap[rawState] || "offline");
+          entry.steam_avatars.push(steamState.attributes?.entity_picture || null);
+          const game = steamState.attributes?.game || null;
+          entry.steam_games.push(game);
+          const imgs = {};
+          if (steamState.attributes?.game_image_header) imgs.header = steamState.attributes.game_image_header;
+          if (steamState.attributes?.game_image_main) imgs.main = steamState.attributes.game_image_main;
+          entry.steam_game_images.push(imgs);
         }
       }
 
-      // Determine merged status (Discord prioritized)
       entry.merged_status = this._mergeStatus(entry);
       entry.merged_game = this._mergeGame(entry);
       entry.merged_images = this._mergeImages(entry);
-      entry.merged_avatar = entry.discord_avatar || entry.steam_avatar;
+      entry.merged_avatar = entry.discord_avatar || entry.steam_avatars.find(a => a) || null;
       entry.platform = this._getPlatform(entry);
 
       entities.push(entry);
@@ -136,27 +133,41 @@ class UnifiedGamingCard extends LitElement {
 
   _mergeStatus(entry) {
     const ds = entry.discord_state;
-    const ss = entry.steam_state;
-    const isOnline = (s) => s && s !== "offline" && s !== "unavailable";
+    const sStates = entry.steam_states;
+    const isOnline = (s) => s && s !== "offline" && s !== "unavailable" && s !== "unknown";
 
-    if (isOnline(ds) && isOnline(ss)) return { status: ds, platforms: "both" };
-    if (isOnline(ds)) return { status: ds, platforms: "discord" };
-    if (isOnline(ss)) return { status: ss, platforms: "steam" };
-    return { status: "offline", platforms: entry.discord_entity && entry.steam_entity ? "both" : entry.discord_entity ? "discord" : "steam" };
+    const discordOnline = isOnline(ds);
+    const steamOnline = sStates.some(s => isOnline(s));
+
+    const hasDiscord = !!entry.discord_entity;
+    const hasSteam = entry.steam_entities.length > 0;
+
+    if (discordOnline && steamOnline) return { status: ds, platforms: "both" };
+    if (discordOnline) return { status: ds, platforms: hasSteam ? "both" : "discord" };
+    if (steamOnline) {
+      const bestSteam = sStates.find(s => isOnline(s)) || "offline";
+      return { status: bestSteam, platforms: hasDiscord ? "both" : "steam" };
+    }
+
+    // Both offline
+    const platforms = hasDiscord && hasSteam ? "both" : hasDiscord ? "discord" : "steam";
+    return { status: "offline", platforms };
   }
 
   _mergeGame(entry) {
     const dg = entry.discord_game && entry.discord_game !== "unknown" && entry.discord_game !== "None" ? entry.discord_game : null;
-    const sg = entry.steam_game && entry.steam_game !== "unknown" && entry.steam_game !== "None" ? entry.steam_game : null;
-    if (dg && sg) return { game: dg, source: "both" };
+    for (const sg of entry.steam_games) {
+      const game = sg && sg !== "unknown" && sg !== "None" ? sg : null;
+      if (dg && game) return { game: dg, source: "discord" };
+      if (dg) return { game: dg, source: "discord" };
+      if (game) return { game, source: "steam" };
+    }
     if (dg) return { game: dg, source: "discord" };
-    if (sg) return { game: sg, source: "steam" };
     return null;
   }
 
   _mergeImages(entry) {
     const di = entry.discord_game_images;
-    const si = entry.steam_game_images;
     const hasReal = (obj) => obj && Object.values(obj).some(v => v && v !== "unknown");
 
     if (hasReal(di)) {
@@ -167,20 +178,22 @@ class UnifiedGamingCard extends LitElement {
         source: "discord",
       };
     }
-    if (hasReal(si)) {
-      return {
-        header: si.header || si.main || null,
-        large: si.header || si.main || null,
-        hero: si.header || si.main || null,
-        source: "steam",
-      };
+    for (const si of entry.steam_game_images) {
+      if (hasReal(si)) {
+        return {
+          header: si.header || si.main || null,
+          large: si.header || si.main || null,
+          hero: si.header || si.main || null,
+          source: "steam",
+        };
+      }
     }
     return null;
   }
 
   _getPlatform(entry) {
     const hasDiscord = !!entry.discord_entity;
-    const hasSteam = !!entry.steam_entity;
+    const hasSteam = entry.steam_entities.length > 0;
     if (hasDiscord && hasSteam) return "both";
     if (hasDiscord) return "discord";
     if (hasSteam) return "steam";
@@ -201,7 +214,7 @@ class UnifiedGamingCard extends LitElement {
         continue;
       }
       if (!UnifiedGamingCard._fetching.has(cacheKey)) {
-        this._fetchSteamImages(game.game, cacheKey, entry);
+        this._fetchSteamImages(game.game, cacheKey);
       }
     }
   }
@@ -217,7 +230,7 @@ class UnifiedGamingCard extends LitElement {
     };
   }
 
-  async _fetchSteamImages(gameName, cacheKey, entry) {
+  async _fetchSteamImages(gameName, cacheKey) {
     UnifiedGamingCard._fetching.add(cacheKey);
     try {
       const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(gameName)}&l=english&cc=US`;
@@ -254,9 +267,7 @@ class UnifiedGamingCard extends LitElement {
         const aVoice = a.discord_voice ? 0 : 1;
         const bVoice = b.discord_voice ? 0 : 1;
         if (aVoice !== bVoice) return aVoice - bVoice;
-        if (sortBy === "name") {
-          return a.name.localeCompare(b.name);
-        }
+        if (sortBy === "name") return a.name.localeCompare(b.name);
         if (sortBy === "game") {
           const ag = a.merged_game ? a.merged_game.game : "";
           const bg = b.merged_game ? b.merged_game.game : "";
@@ -276,31 +287,21 @@ class UnifiedGamingCard extends LitElement {
       case "idle": return "Inaktiv";
       case "dnd": return "Forstyr ikke";
       case "offline": return "Offline";
-      default: return "Ukendt";
+      default: return state && state !== "unknown" ? state : "Offline";
     }
-  }
-
-  _platformIcon(platform) {
-    if (platform === "discord") return "mdi:discord";
-    if (platform === "steam") return "mdi:steam";
-    if (platform === "both") return "mdi:disc";
-    return "";
   }
 
   _handleAction(entry) {
     const action = this.config.click_action || "popup";
     const target = this.config.click_action_target || "";
-
-    const entity = entry.discord_entity || entry.steam_entity;
+    const entity = entry.discord_entity || entry.steam_entities[0];
     if (!entity) return;
 
     if (action === "navigate" && target) {
       history.pushState(null, "", target);
-      const event = new Event("location-changed", { composed: true });
-      window.dispatchEvent(event);
+      window.dispatchEvent(new Event("location-changed", { composed: true }));
     } else if (action === "toggle" && target) {
-      const domain = target.split(".")[0];
-      this.hass.callService(domain, "toggle", { entity_id: target });
+      this.hass.callService(target.split(".")[0], "toggle", { entity_id: target });
     } else {
       const event = new Event("hass-more-info", { composed: true });
       event.detail = { entityId: entity.entity_id };
@@ -316,9 +317,7 @@ class UnifiedGamingCard extends LitElement {
     const avatar = entry.merged_avatar;
     const voice = entry.discord_voice;
     const compact = this.config.compact_mode;
-    const showBadge = this.config.show_game_badge && game;
 
-    const gameImg = images ? images.header : null;
     let bgImg = compact ? null : (images ? (images.hero || images.header || images.large) : null);
 
     return html`
@@ -327,16 +326,13 @@ class UnifiedGamingCard extends LitElement {
         <div class="steam-user ${compact ? "compact" : ""}">
           <div class="avatar-wrap ${state}">
             ${avatar ? html`<img src="${avatar}${entry.discord_entity ? '?size=128' : ''}" class="steam-avatar ${state}" onerror="this.style.display='none'">` : html`<div class="steam-avatar ${state}"></div>`}
-            ${showBadge && gameImg ? html`<img src="${gameImg}" class="game-badge" onerror="this.style.display='none'">` : ""}
-          </div>
-          <div class="user-container ${game ? "" : "no-game"}">
-            <div class="steam-username ${voice ? "voice" : state}">
-              ${entry.name}
-              <span class="platform-icons">
-                ${(platform === "discord" || platform === "both") ? html`<ha-icon icon="mdi:discord" class="platform-icon discord"></ha-icon>` : ""}
-                ${(platform === "steam" || platform === "both") ? html`<ha-icon icon="mdi:steam" class="platform-icon steam"></ha-icon>` : ""}
-              </span>
+            <div class="platform-badge">
+              ${(platform === "discord" || platform === "both") ? html`<ha-icon icon="mdi:discord" class="pf-icon discord"></ha-icon>` : ""}
+              ${(platform === "steam" || platform === "both") ? html`<ha-icon icon="mdi:steam" class="pf-icon steam"></ha-icon>` : ""}
             </div>
+          </div>
+          <div class="user-container">
+            <div class="steam-username ${voice ? "voice" : state}">${entry.name}</div>
             ${!compact ? html`
             <div class="steam-value ${voice ? "voice" : state}">
               ${voice ? html`<ha-icon icon="mdi:phone" class="mic-icon"></ha-icon>${" " + voice}` : ""}
@@ -549,15 +545,25 @@ class UnifiedGamingCard extends LitElement {
         min-width: 28px;
         min-height: 28px;
       }
-      .game-badge {
+      .platform-badge {
         position: absolute;
-        bottom: -2px;
-        right: -2px;
-        width: 16px;
-        height: 16px;
-        border-radius: 3px;
-        object-fit: cover;
-        border: 1px solid rgba(0, 0, 0, 0.4);
+        bottom: -3px;
+        right: -3px;
+        display: flex;
+        gap: 0;
+        background: rgba(0, 0, 0, 0.7);
+        border-radius: 6px;
+        padding: 1px 2px;
+        line-height: 0;
+      }
+      .pf-icon {
+        --mdc-icon-size: 10px;
+      }
+      .pf-icon.discord {
+        color: #5865f2;
+      }
+      .pf-icon.steam {
+        color: #b8b8b8;
       }
       .steam-avatar.online {
         border-color: #6cff4f9d;
@@ -585,9 +591,6 @@ class UnifiedGamingCard extends LitElement {
         overflow: hidden;
         align-content: center;
       }
-      .user-container.no-game {
-        align-items: center;
-      }
       .steam-username {
         width: 100%;
         font-weight: 600;
@@ -595,31 +598,12 @@ class UnifiedGamingCard extends LitElement {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        display: flex;
-        align-items: center;
-        gap: 4px;
       }
       .steam-multi.compact .steam-username {
         font-size: 0.78em;
       }
       .steam-username.offline {
         opacity: 0.5;
-      }
-      .platform-icons {
-        display: inline-flex;
-        align-items: center;
-        gap: 2px;
-        flex-shrink: 0;
-      }
-      .platform-icon {
-        --mdc-icon-size: 14px;
-        opacity: 0.7;
-      }
-      .platform-icon.discord {
-        color: #5865f2;
-      }
-      .platform-icon.steam {
-        color: #1b2838;
       }
       .steam-value {
         width: 100%;
