@@ -5,10 +5,12 @@ Custom [Home Assistant](https://www.home-assistant.io/) Lovelace card that combi
 ## Features
 
 - Combines Discord and Steam users in a single card
-- Platform icons (Discord/Steam) showing where each user is online
+- Dynamic platform icons — only shows Discord/Steam icon when user is actually online on that platform
+- Multiple Steam accounts per user
 - Discord status prioritized over Steam
 - Game activity from both platforms (Discord prioritized)
 - Voice channel features from Discord (mute, deaf, stream)
+- Offline users in voice calls get red avatar highlight
 - Automatic Steam image lookup fallback
 - Compact 2-column grid layout
 - Avatar with colored status border
@@ -53,6 +55,17 @@ users:
     steam: sensor.steam_larsgaming
 ```
 
+Multiple Steam accounts per user:
+
+```yaml
+users:
+  - name: "Stealthy"
+    discord: sensor.discord_user_123456789
+    steam:
+      - sensor.steam_steam_placeholder
+      - sensor.steam_placeholder2
+```
+
 ### Options
 
 | Name | Type | Default | Description |
@@ -64,7 +77,6 @@ users:
 | `max_online` | number | `0` | Max active users to show (0 = unlimited) |
 | `max_offline` | number | `0` | Max offline users to show (0 = unlimited) |
 | `sort_by` | string | `"status"` | Sort by `status`, `name`, or `game` |
-| `show_game_badge` | boolean | `false` | Show game icon as badge on avatar |
 | `click_action` | string | `"popup"` | Click action: `popup`, `navigate`, or `toggle` |
 | `click_action_target` | string | `""` | Target for navigate/toggle |
 | `compact_mode` | boolean | `false` | Minimal layout without background images |
@@ -76,7 +88,7 @@ users:
 |-----|------|----------|-------------|
 | `name` | string | Yes | Display name |
 | `discord` | string | No | Discord entity ID (e.g. `sensor.discord_user_123456789`) |
-| `steam` | string | No | Steam entity ID (e.g. `sensor.steam_username`) |
+| `steam` | string/list | No | Steam entity ID or list of Steam entity IDs |
 
 At least one of `discord` or `steam` must be provided.
 
@@ -112,7 +124,6 @@ hide_offline: false
 show_toggle: true
 max_online: 10
 sort_by: game
-show_game_badge: true
 compact_mode: false
 voice_highlight_color: "#ff5722"
 ```
@@ -123,7 +134,6 @@ voice_highlight_color: "#ff5722"
 type: custom:unified-gaming-card
 title: "Gaming"
 compact_mode: true
-show_game_badge: true
 sort_by: game
 users:
   - name: "Mikkel"
