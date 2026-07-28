@@ -10,6 +10,7 @@ Custom [Home Assistant](https://www.home-assistant.io/) Lovelace card that combi
 - Discord status prioritized over Steam
 - Game activity from both platforms (Discord prioritized)
 - Voice channel features from Discord (mute, deaf, stream)
+- Voice channel fallback — reads from base entity attributes when sub-entity is unknown
 - Offline users in voice calls get red avatar highlight
 - Automatic Steam image lookup fallback
 - Compact 2-column grid layout
@@ -81,6 +82,7 @@ users:
 | `click_action_target` | string | `""` | Target for navigate/toggle |
 | `compact_mode` | boolean | `false` | Minimal layout without background images |
 | `voice_highlight_color` | string | `""` | Custom color for voice user accent |
+| `voice_text_color` | string | `""` | Custom color for voice channel text (default: `#4081e4`) |
 
 ### User Profile
 
