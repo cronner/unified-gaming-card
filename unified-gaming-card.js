@@ -34,6 +34,7 @@ class UnifiedGamingCard extends LitElement {
       click_action_target: "",
       compact_mode: false,
       voice_highlight_color: "",
+      voice_text_color: "",
     };
   }
 
@@ -372,8 +373,9 @@ class UnifiedGamingCard extends LitElement {
     const voiceColor = this.config.voice_highlight_color || "";
 
     let cardStyle = "";
-    if (voiceColor) {
-      cardStyle = `--voice-color: ${voiceColor}; --voice-shadow: ${voiceColor}88;`;
+    const voiceTextColor = this.config.voice_text_color || "";
+    if (voiceColor || voiceTextColor) {
+      cardStyle = `--voice-color: ${voiceColor ? voiceColor : "#e44040"}; --voice-shadow: ${(voiceColor || "#e44040")}88; --voice-text-color: ${voiceTextColor ? voiceTextColor : "#4081e4"};`;
     }
 
     const filtered = this._filterByStatus(this._entities);
@@ -637,7 +639,7 @@ class UnifiedGamingCard extends LitElement {
         opacity: 1;
       }
       .steam-value.voice {
-        color: #4081e4;
+        color: var(--voice-text-color, #4081e4);
         display: flex;
         align-items: center;
         gap: 3px;
