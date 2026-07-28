@@ -97,6 +97,9 @@ class UnifiedGamingCard extends LitElement {
             else if (suffix === "voice_self_deaf") entry.discord_voice_deaf = state.state === "True";
             else if (suffix === "voice_self_stream") entry.discord_voice_stream = state.state === "True";
           }
+          if (!entry.discord_voice && baseState.attributes?.voice_channel) {
+            entry.discord_voice = baseState.attributes.voice_channel;
+          }
         }
       }
 
