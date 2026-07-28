@@ -66,6 +66,7 @@ class UnifiedGamingCard extends LitElement {
         discord_game: null,
         discord_game_images: {},
         discord_voice: null,
+        discord_voice_sensor: null,
         discord_voice_mute: false,
         discord_voice_deaf: false,
         discord_voice_stream: false,
@@ -93,13 +94,15 @@ class UnifiedGamingCard extends LitElement {
             else if (suffix === "game_image_capsule_231x87") entry.discord_game_images.capsule = state.state;
             else if (suffix === "game_image_large") entry.discord_game_images.large = state.state;
             else if (suffix === "game_image_library_hero") entry.discord_game_images.hero = state.state;
-            else if (suffix === "voice_channel") entry.discord_voice = state.state !== "unknown" ? state.state : null;
+            else if (suffix === "voice_channel") entry.discord_voice_sensor = state.state;
             else if (suffix === "voice_self_mute") entry.discord_voice_mute = state.state === "True";
             else if (suffix === "voice_self_deaf") entry.discord_voice_deaf = state.state === "True";
             else if (suffix === "voice_self_stream") entry.discord_voice_stream = state.state === "True";
           }
-          if (!entry.discord_voice && baseState.attributes?.voice_channel) {
+          if ("voice_channel" in (baseState.attributes || {})) {
             entry.discord_voice = baseState.attributes.voice_channel;
+          } else if (entry.discord_voice_sensor !== "unknown" && entry.discord_voice_sensor !== "None") {
+            entry.discord_voice = entry.discord_voice_sensor;
           }
         }
       }
