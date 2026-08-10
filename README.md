@@ -60,11 +60,11 @@ Multiple Steam accounts per user:
 
 ```yaml
 users:
-  - name: "Stealthy"
+  - name: "Charlie"
     discord: sensor.discord_user_123456789
     steam:
-      - sensor.steam_steam_placeholder
-      - sensor.steam_placeholder2
+      - sensor.steam_charlieboy_second
+      - sensor.steam_charlieboy123
 ```
 
 ### Options
