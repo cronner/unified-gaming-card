@@ -63,7 +63,7 @@ users:
   - name: "Player 4"
     discord: sensor.discord_user_123456789
     steam:
-      - sensor.steam_player_3_placeholder
+      - sensor.steam_player_3_second
       - sensor.steam_player_4
 ```
 
