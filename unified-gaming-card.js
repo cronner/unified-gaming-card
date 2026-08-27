@@ -38,6 +38,7 @@ class UnifiedGamingCard extends LitElement {
       compact_mode: false,
       voice_highlight_color: "",
       voice_text_color: "",
+      voice_status_style: "overlay",
     };
   }
 
@@ -74,6 +75,21 @@ class UnifiedGamingCard extends LitElement {
         discord_voice_deaf: false,
         discord_voice_stream: false,
         discord_avatar: null,
+        discord_activity_state: null,
+        discord_watching: null,
+        discord_watching_details: null,
+        discord_watching_url: null,
+        discord_watching_image_large: null,
+        discord_streaming: null,
+        discord_streaming_details: null,
+        discord_streaming_url: null,
+        discord_listening: null,
+        discord_listening_details: null,
+        discord_listening_url: null,
+        discord_spotify_artists: null,
+        discord_spotify_title: null,
+        discord_spotify_album: null,
+        discord_spotify_album_cover_url: null,
         steam_states: [],
         steam_games: [],
         steam_game_images: [],
@@ -101,6 +117,23 @@ class UnifiedGamingCard extends LitElement {
             else if (suffix === "voice_self_mute") entry.discord_voice_mute = state.state === "True";
             else if (suffix === "voice_self_deaf") entry.discord_voice_deaf = state.state === "True";
             else if (suffix === "voice_self_stream") entry.discord_voice_stream = state.state === "True";
+            else if (suffix === "watching") entry.discord_watching = state.state;
+            else if (suffix === "watching_details") entry.discord_watching_details = state.state;
+            else if (suffix === "watching_url") entry.discord_watching_url = state.state;
+            else if (suffix === "watching_image_large") entry.discord_watching_image_large = state.state;
+            else if (suffix === "streaming") entry.discord_streaming = state.state;
+            else if (suffix === "streaming_details") entry.discord_streaming_details = state.state;
+            else if (suffix === "streaming_url") entry.discord_streaming_url = state.state;
+            else if (suffix === "listening") entry.discord_listening = state.state;
+            else if (suffix === "listening_details") entry.discord_listening_details = state.state;
+            else if (suffix === "listening_url") entry.discord_listening_url = state.state;
+            else if (suffix === "spotify_artists") entry.discord_spotify_artists = state.state;
+            else if (suffix === "spotify_title") entry.discord_spotify_title = state.state;
+            else if (suffix === "spotify_album") entry.discord_spotify_album = state.state;
+            else if (suffix === "spotify_album_cover_url") entry.discord_spotify_album_cover_url = state.state;
+          }
+          if ("activity_state" in (baseState.attributes || {})) {
+            entry.discord_activity_state = baseState.attributes.activity_state;
           }
           if ("voice_channel" in (baseState.attributes || {})) {
             entry.discord_voice = baseState.attributes.voice_channel;
@@ -131,6 +164,7 @@ class UnifiedGamingCard extends LitElement {
 
       entry.merged_status = this._mergeStatus(entry);
       entry.merged_game = this._mergeGame(entry);
+      entry.merged_activity = this._mergeActivity(entry);
       entry.merged_images = this._mergeImages(entry);
       entry.merged_avatar = entry.discord_avatar || entry.steam_avatars.find(a => a) || null;
       entry.platform = this._getPlatform(entry);
@@ -188,6 +222,15 @@ class UnifiedGamingCard extends LitElement {
         source: "discord",
       };
     }
+    const watchingImg = entry.discord_watching_image_large;
+    if (watchingImg && watchingImg !== "unknown") {
+      return {
+        header: watchingImg,
+        large: watchingImg,
+        hero: watchingImg,
+        source: "watching",
+      };
+    }
     for (const si of entry.steam_game_images) {
       if (hasReal(si)) {
         return {
@@ -197,6 +240,60 @@ class UnifiedGamingCard extends LitElement {
           source: "steam",
         };
       }
+    }
+    const spotifyCover = entry.discord_spotify_album_cover_url;
+    if (spotifyCover) {
+      return {
+        header: spotifyCover,
+        large: spotifyCover,
+        hero: spotifyCover,
+        source: "spotify",
+      };
+    }
+    return null;
+  }
+
+  _mergeActivity(entry) {
+    const has = (v) => v && v !== "unknown" && v !== "None";
+    const nameOr = (...vals) => vals.find(has);
+
+    if (entry.merged_game) {
+      return { text: entry.merged_game.game, icon: null, type: "game" };
+    }
+    if (has(entry.discord_spotify_title)) {
+      const artist = entry.discord_spotify_artists;
+      return {
+        text: artist ? `${artist} - ${entry.discord_spotify_title}` : entry.discord_spotify_title,
+        icon: "mdi:spotify",
+        type: "spotify",
+      };
+    }
+    if (has(entry.discord_watching_details) || has(entry.discord_watching)) {
+      const name = nameOr(entry.discord_watching_details, entry.discord_watching);
+      const ep = entry.discord_activity_state;
+      return {
+        text: `${name}${ep && has(ep) ? " - " + ep : ""}`,
+        icon: "mdi:television-play",
+        type: "watching",
+      };
+    }
+    if (has(entry.discord_streaming)) {
+      const name = entry.discord_streaming;
+      const det = entry.discord_streaming_details;
+      return {
+        text: `${name}${det && has(det) ? " - " + det : ""}`,
+        icon: "mdi:stream",
+        type: "streaming",
+      };
+    }
+    if (has(entry.discord_listening)) {
+      const name = entry.discord_listening;
+      const det = entry.discord_listening_details;
+      return {
+        text: `${name}${det && has(det) ? " - " + det : ""}`,
+        icon: "mdi:headphones",
+        type: "listening",
+      };
     }
     return null;
   }
@@ -287,8 +384,8 @@ class UnifiedGamingCard extends LitElement {
         if (aVoice !== bVoice) return aVoice - bVoice;
         if (sortBy === "name") return a.name.localeCompare(b.name);
         if (sortBy === "game") {
-          const ag = a.merged_game ? a.merged_game.game : "";
-          const bg = b.merged_game ? b.merged_game.game : "";
+          const ag = a.merged_activity ? a.merged_activity.text : (a.merged_game ? a.merged_game.game : "");
+          const bg = b.merged_activity ? b.merged_activity.text : (b.merged_game ? b.merged_game.game : "");
           if (ag && !bg) return -1;
           if (!ag && bg) return 1;
           return ag.localeCompare(bg) || a.name.localeCompare(b.name);
@@ -331,34 +428,50 @@ class UnifiedGamingCard extends LitElement {
     const state = entry.merged_status.status;
     const platform = entry.platform;
     const game = entry.merged_game;
+    const activity = entry.merged_activity;
     const images = entry.merged_images;
     const avatar = entry.merged_avatar;
     const voice = entry.discord_voice;
     const compact = this.config.compact_mode;
+    const voiceStyle = this.config.voice_status_style || "overlay";
 
     let bgImg = compact ? null : (images ? (images.hero || images.header || images.large) : null);
 
     return html`
-      <div class="steam-multi ${voice ? "in-voice" : state} ${compact ? "compact" : ""}" @click=${() => this._handleAction(entry)}>
+      <div class="steam-multi ${voice ? "in-voice" : state} ${compact ? "compact" : ""} ${activity ? "has-activity" : ""}" @click=${() => this._handleAction(entry)}>
         ${bgImg ? html`<img src="${bgImg}" class="steam-game-bg" onerror="this.style.display='none'">` : ""}
         <div class="steam-user ${compact ? "compact" : ""}">
           <div class="avatar-wrap ${state}">
             ${avatar ? html`<img src="${avatar}${entry.discord_entity ? '?size=128' : ''}" class="steam-avatar ${state}" onerror="this.style.display='none'">` : html`<div class="steam-avatar ${state}"></div>`}
+            ${voice && voiceStyle === "overlay" ? html`
+            <div class="voice-status-overlay voice-status-left">
+              ${entry.discord_voice_mute ? html`<ha-icon icon="mdi:microphone-off" class="voice-status-icon"></ha-icon>` : ""}
+              ${entry.discord_voice_deaf ? html`<ha-icon icon="mdi:volume-off" class="voice-status-icon"></ha-icon>` : ""}
+            </div>
+            <div class="voice-status-overlay voice-status-right">
+              ${entry.discord_voice_stream ? html`<ha-icon icon="mdi:monitor-shimmer" class="voice-status-icon"></ha-icon>` : ""}
+              ${entry.discord_voice_self_video ? html`<ha-icon icon="mdi:webcam" class="voice-status-icon"></ha-icon>` : ""}
+            </div>` : ""}
             <div class="platform-badge">
               ${(platform === "discord" || platform === "both") ? html`<svg class="pf-icon discord" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>` : ""}
               ${(platform === "steam" || platform === "both") ? html`<ha-icon icon="mdi:steam" class="pf-icon steam"></ha-icon>` : ""}
             </div>
           </div>
           <div class="user-container">
-            <div class="steam-username ${voice ? "voice" : state}">${entry.name}</div>
+            <div class="steam-name-row">
+              <div class="steam-username ${voice ? "voice" : state}">${entry.name}</div>
+              ${voice && voiceStyle === "inline" ? html`
+              <div class="steam-voice-inline">
+                ${entry.discord_voice_stream ? html`<ha-icon icon="mdi:monitor-shimmer" class="voice-inline-icon"></ha-icon>` : ""}
+                ${entry.discord_voice_self_video ? html`<ha-icon icon="mdi:webcam" class="voice-inline-icon"></ha-icon>` : ""}
+                ${entry.discord_voice_mute ? html`<ha-icon icon="mdi:microphone-off" class="voice-inline-icon"></ha-icon>` : ""}
+                ${entry.discord_voice_deaf ? html`<ha-icon icon="mdi:volume-off" class="voice-inline-icon"></ha-icon>` : ""}
+              </div>` : ""}
+            </div>
             ${!compact ? html`
             <div class="steam-value ${voice ? "voice" : state}">
-              ${voice ? html`<ha-icon icon="mdi:phone" class="mic-icon"></ha-icon>${" " + voice}` : ""}
-              ${voice && entry.discord_voice_stream ? html`<ha-icon icon="mdi:monitor-shimmer" class="mic-icon"></ha-icon>` : ""}
-              ${voice && entry.discord_voice_deaf ? html`<ha-icon icon="mdi:volume-off" class="mic-icon"></ha-icon>` : ""}
-              ${voice && entry.discord_voice_mute ? html`<ha-icon icon="mdi:microphone-off" class="mic-icon"></ha-icon>` : ""}
-              ${game ? html`<ha-icon icon="mdi:gamepad-variant" class="mic-icon"></ha-icon>${" " + game.game}` : ""}
-              ${!voice && !game ? this._stateLabel(state) : ""}
+              ${activity ? html`${activity.icon ? html`<ha-icon icon="${activity.icon}" class="mic-icon"></ha-icon>` : ""}${" " + activity.text}` : ""}
+              ${!voice && !activity ? this._stateLabel(state) : ""}
             </div>` : ""}
           </div>
         </div>
@@ -389,6 +502,12 @@ class UnifiedGamingCard extends LitElement {
     const allUsers = [...groups.online, ...groups.idle, ...groups.dnd, ...groups.unavailable, ...groups.offline];
     const inVoice = allUsers.filter(e => e.discord_voice && e.discord_voice !== "unknown");
     const notInVoice = allUsers.filter(e => !e.discord_voice || e.discord_voice === "unknown");
+    const voiceChannels = new Map();
+    for (const e of inVoice) {
+      const ch = e.discord_voice;
+      if (!voiceChannels.has(ch)) voiceChannels.set(ch, []);
+      voiceChannels.get(ch).push(e);
+    }
     let offlineNotInVoice = notInVoice.filter(e => e.merged_status.status === "offline");
     if (maxOffline > 0) offlineNotInVoice = offlineNotInVoice.slice(0, maxOffline);
     let activeNotInVoice = notInVoice.filter(e => e.merged_status.status !== "offline");
@@ -405,13 +524,15 @@ class UnifiedGamingCard extends LitElement {
               </div>`
             : ""}
         </div>
-        ${inVoice.length > 0
-          ? html`
-              <div class="status-category">I opkald (${inVoice.length})</div>
+        ${voiceChannels.size > 0
+          ? html`${Array.from(voiceChannels.entries()).map(([channel, users]) => html`
+              <div class="status-category">${channel} (${users.length})</div>
               <div class="user-grid ${compact ? "compact" : ""}">
-                ${inVoice.map(e => this._renderUserItem(e))}
-              </div>`
+                ${users.map(e => this._renderUserItem(e))}
+              </div>`)}`
           : ""}
+        ${voiceChannels.size > 0
+          ? html`<div class="voice-divider"></div>` : ""}
         ${activeNotInVoice.length > 0
           ? html`<div class="user-grid ${compact ? "compact" : ""}">
               ${activeNotInVoice.map(e => this._renderUserItem(e))}
@@ -489,6 +610,13 @@ class UnifiedGamingCard extends LitElement {
         margin: 6px 0 4px 0;
         letter-spacing: 0.5px;
       }
+      .voice-divider {
+        width: 100%;
+        height: 1px;
+        background: var(--divider-color, #e0e0e0);
+        margin: 16px 0;
+        opacity: 0.6;
+      }
       .user-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -506,6 +634,9 @@ class UnifiedGamingCard extends LitElement {
         min-height: 48px;
         cursor: pointer;
         transition: opacity 0.15s;
+      }
+      .steam-multi.has-activity {
+        min-height: 64px;
       }
       .steam-multi.compact {
         min-height: 36px;
@@ -547,6 +678,33 @@ class UnifiedGamingCard extends LitElement {
       .avatar-wrap {
         flex-shrink: 0;
         position: relative;
+      }
+      .voice-status-overlay {
+        position: absolute;
+        display: flex;
+        flex-direction: row;
+        gap: 3px;
+        z-index: 2;
+        flex-wrap: wrap;
+      }
+      .voice-status-left {
+        top: -4px;
+        left: -4px;
+        max-width: 60px;
+      }
+      .voice-status-right {
+        top: -4px;
+        right: -4px;
+        max-width: 60px;
+      }
+      .voice-status-icon {
+        --mdc-icon-size: 16px;
+        color: white;
+        background: rgba(0, 0, 0, 0.85);
+        border-radius: 50%;
+        padding: 3px;
+        display: block;
+        flex-shrink: 0;
       }
       .steam-avatar {
         width: 36px;
@@ -614,16 +772,24 @@ class UnifiedGamingCard extends LitElement {
         margin-left: 0;
         width: 100%;
         min-width: 0;
-        overflow: hidden;
         align-content: center;
       }
-      .steam-username {
+      .steam-name-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
         width: 100%;
+        min-width: 0;
+      }
+      .steam-username {
         font-weight: 600;
         font-size: 0.85em;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        flex: 1;
+        min-width: 0;
+        max-width: 60%;
       }
       .steam-multi.compact .steam-username {
         font-size: 0.78em;
@@ -631,12 +797,25 @@ class UnifiedGamingCard extends LitElement {
       .steam-username.offline {
         opacity: 0.5;
       }
+      .steam-voice-inline {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        flex-shrink: 0;
+      }
+      .voice-inline-icon {
+        --mdc-icon-size: 14px;
+        color: var(--voice-text-color, #4081e4);
+        opacity: 0.85;
+      }
       .steam-value {
         width: 100%;
         font-size: 0.72em;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        white-space: normal;
+        word-break: break-word;
+        line-height: 1.3;
+        margin-top: 2px;
+        overflow: visible;
       }
       .steam-value.offline {
         opacity: 0.5;
