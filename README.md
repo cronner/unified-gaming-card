@@ -9,13 +9,15 @@ Custom [Home Assistant](https://www.home-assistant.io/) Lovelace card that combi
 - Multiple Steam accounts per user
 - Discord status prioritized over Steam
 - Game activity from both platforms (Discord prioritized)
-- Voice channel features from Discord (mute, deaf, stream)
+- **Rich Discord activity support** — shows Watching (TV/streaming), Listening (Spotify), and Streaming activities with images
+- Voice channel grouping — users grouped by voice channel name (e.g., "Tale 1 (5)")
+- Voice status icons — mute, deaf, stream, and webcam indicators on avatars
 - Voice channel fallback — reads from base entity attributes when sub-entity is unknown
 - Offline users in voice calls get red avatar highlight
 - Automatic Steam image lookup fallback
 - Compact 2-column grid layout
 - Avatar with colored status border
-- Game background images
+- Game/activity background images
 - Toggle offline users
 - Sort by status, name, or game
 - Click actions (popup, navigate, toggle)
@@ -83,6 +85,7 @@ users:
 | `compact_mode` | boolean | `false` | Minimal layout without background images |
 | `voice_highlight_color` | string | `""` | Custom color for voice user accent |
 | `voice_text_color` | string | `""` | Custom color for voice channel text (default: `#4081e4`) |
+| `voice_status_style` | string | `"overlay"` | Voice status icon position: `overlay` (on avatar) or `inline` (after name) |
 
 ### User Profile
 
@@ -93,6 +96,56 @@ users:
 | `steam` | string/list | No | Steam entity ID or list of Steam entity IDs |
 
 At least one of `discord` or `steam` must be provided.
+
+## Discord Activity Display
+
+The card shows rich Discord activity beyond just games:
+
+- **Playing** — Game name with background image (from Discord or Steam)
+- **Watching** — TV/streaming activity (e.g., "Reacher - S04E05") with cover image
+- **Listening** — Music activity (e.g., Spotify) with album art
+- **Streaming** — Live streaming activity (e.g., Twitch/YouTube)
+
+Activity priority: Game > Spotify > Watching > Streaming > Listening
+
+## Voice Channel Features
+
+### Voice Status Icons
+
+Shows voice activity indicators on user avatars:
+
+- 🎤 **Mute** — Microphone off (`voice_self_mute`)
+-  **Deaf** — Headset muted (`voice_self_deaf`)
+- 📺 **Stream** — Screen sharing (`voice_self_stream`)
+-  **Webcam** — Camera on (`voice_self_video`)
+
+### Voice Status Style
+
+Control where voice status icons appear:
+
+**Overlay** (default) — Icons on avatar corners:
+```yaml
+voice_status_style: overlay
+```
+
+**Inline** — Icons after username:
+```yaml
+voice_status_style: inline
+```
+
+### Voice Channel Grouping
+
+Users in voice channels are grouped by channel name with a divider separating them from other users:
+
+```
+TALE 1 (5)
+├── User 1
+├── User 2
+└── User 3
+─────────────
+├── User 4 (online, not in voice)
+└── User 5 (idle)
+```
 
 ## Examples
 
@@ -128,17 +181,49 @@ max_online: 10
 sort_by: game
 compact_mode: false
 voice_highlight_color: "#ff5722"
+voice_text_color: "#4081e4"
+voice_status_style: overlay
 ```
 
-### Compact mode
+### Compact mode with inline voice icons
 
 ```yaml
 type: custom:unified-gaming-card
 title: "Gaming"
 compact_mode: true
 sort_by: game
+voice_status_style: inline
 users:
   - name: "Mikkel"
     discord: sensor.discord_user_123456789
     steam: sensor.steam_mikkel123
 ```
+
+### Gaming dashboard with voice grouping
+
+```yaml
+type: custom:unified-gaming-card
+title: "Gaming"
+hide_offline: true
+sort_by: game
+voice_status_style: overlay
+users:
+  - name: "Cronner"
+    discord: sensor.discord_user_669490307423010837
+    steam: sensor.cronnerdk
+  - name: "Lise"
+    discord: sensor.discord_user_574224915083952137
+    steam: sensor.lisemadsen1995
+  - name: "Oliver"
+    discord: sensor.discord_user_422547481298206720
+    steam: sensor.mindofeagledk
+```
+
+## Requirements
+
+- [Discord Game](https://github.com/3rob3/Discord-Game) custom component (for Discord users)
+- [Steam](https://github.com/3rob3/gaming-steam-status) integration (for Steam users, optional)
+
+## License
+
+MIT
