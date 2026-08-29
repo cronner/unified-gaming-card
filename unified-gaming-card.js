@@ -39,6 +39,7 @@ class UnifiedGamingCard extends LitElement {
       voice_highlight_color: "",
       voice_text_color: "",
       voice_status_style: "overlay",
+      view_mode: "grid",
     };
   }
 
@@ -68,12 +69,14 @@ class UnifiedGamingCard extends LitElement {
         steam_entities: [],
         discord_state: null,
         discord_game: null,
+        discord_game_details: null,
         discord_game_images: {},
         discord_voice: null,
         discord_voice_sensor: null,
         discord_voice_mute: false,
         discord_voice_deaf: false,
         discord_voice_stream: false,
+        discord_voice_duration: null,
         discord_avatar: null,
         discord_activity_state: null,
         discord_watching: null,
@@ -90,6 +93,8 @@ class UnifiedGamingCard extends LitElement {
         discord_spotify_title: null,
         discord_spotify_album: null,
         discord_spotify_album_cover_url: null,
+        discord_custom_status: null,
+        discord_custom_emoji: null,
         steam_states: [],
         steam_games: [],
         steam_game_images: [],
@@ -109,6 +114,7 @@ class UnifiedGamingCard extends LitElement {
             if (entityId === prefix || !entityId.startsWith(prefix + "_")) continue;
             const suffix = entityId.slice(prefix.length + 1);
             if (suffix === "game") entry.discord_game = state.state !== "unknown" && state.state !== "None" ? state.state : null;
+            else if (suffix === "game_details") entry.discord_game_details = state.state !== "unknown" && state.state !== "None" ? state.state : null;
             else if (suffix === "game_image_header") entry.discord_game_images.header = state.state;
             else if (suffix === "game_image_capsule_231x87") entry.discord_game_images.capsule = state.state;
             else if (suffix === "game_image_large") entry.discord_game_images.large = state.state;
@@ -117,6 +123,7 @@ class UnifiedGamingCard extends LitElement {
             else if (suffix === "voice_self_mute") entry.discord_voice_mute = state.state === "True";
             else if (suffix === "voice_self_deaf") entry.discord_voice_deaf = state.state === "True";
             else if (suffix === "voice_self_stream") entry.discord_voice_stream = state.state === "True";
+            else if (suffix === "voice_duration") entry.discord_voice_duration = state.state !== "unknown" && state.state !== "None" ? state.state : null;
             else if (suffix === "watching") entry.discord_watching = state.state;
             else if (suffix === "watching_details") entry.discord_watching_details = state.state;
             else if (suffix === "watching_url") entry.discord_watching_url = state.state;
@@ -131,6 +138,8 @@ class UnifiedGamingCard extends LitElement {
             else if (suffix === "spotify_title") entry.discord_spotify_title = state.state;
             else if (suffix === "spotify_album") entry.discord_spotify_album = state.state;
             else if (suffix === "spotify_album_cover_url") entry.discord_spotify_album_cover_url = state.state;
+            else if (suffix === "custom_status") entry.discord_custom_status = state.state !== "unknown" && state.state !== "None" ? state.state : null;
+            else if (suffix === "custom_emoji") entry.discord_custom_emoji = state.state !== "unknown" && state.state !== "None" ? state.state : null;
           }
           if ("activity_state" in (baseState.attributes || {})) {
             entry.discord_activity_state = baseState.attributes.activity_state;
@@ -200,13 +209,14 @@ class UnifiedGamingCard extends LitElement {
 
   _mergeGame(entry) {
     const dg = entry.discord_game && entry.discord_game !== "unknown" && entry.discord_game !== "None" ? entry.discord_game : null;
+    const dgDetails = entry.discord_game_details && entry.discord_game_details !== "unknown" && entry.discord_game_details !== "None" ? entry.discord_game_details : null;
     for (const sg of entry.steam_games) {
       const game = sg && sg !== "unknown" && sg !== "None" ? sg : null;
-      if (dg && game) return { game: dg, source: "discord" };
-      if (dg) return { game: dg, source: "discord" };
-      if (game) return { game, source: "steam" };
+      if (dg && game) return { game: dg, details: dgDetails, source: "discord" };
+      if (dg) return { game: dg, details: dgDetails, source: "discord" };
+      if (game) return { game, details: null, source: "steam" };
     }
-    if (dg) return { game: dg, source: "discord" };
+    if (dg) return { game: dg, details: dgDetails, source: "discord" };
     return null;
   }
 
@@ -258,7 +268,13 @@ class UnifiedGamingCard extends LitElement {
     const nameOr = (...vals) => vals.find(has);
 
     if (entry.merged_game) {
-      return { text: entry.merged_game.game, icon: null, type: "game" };
+      const details = entry.merged_game.details || entry.discord_activity_state;
+      return { 
+        text: entry.merged_game.game, 
+        subtitle: details,
+        icon: null, 
+        type: "game" 
+      };
     }
     if (has(entry.discord_spotify_title)) {
       const artist = entry.discord_spotify_artists;
@@ -293,6 +309,14 @@ class UnifiedGamingCard extends LitElement {
         text: `${name}${det && has(det) ? " - " + det : ""}`,
         icon: "mdi:headphones",
         type: "listening",
+      };
+    }
+    if (has(entry.discord_custom_status)) {
+      const emoji = entry.discord_custom_emoji;
+      return {
+        text: `${emoji ? emoji + " " : ""}${entry.discord_custom_status}`,
+        icon: null,
+        type: "custom",
       };
     }
     return null;
@@ -470,7 +494,13 @@ class UnifiedGamingCard extends LitElement {
             </div>
             ${!compact ? html`
             <div class="steam-value ${voice ? "voice" : state}">
-              ${activity ? html`${activity.icon ? html`<ha-icon icon="${activity.icon}" class="mic-icon"></ha-icon>` : ""}${" " + activity.text}` : ""}
+              ${activity ? html`
+                <div class="activity-text">
+                  ${activity.icon ? html`<ha-icon icon="${activity.icon}" class="mic-icon"></ha-icon>` : ""}
+                  <span>${activity.text}</span>
+                </div>
+                ${activity.subtitle ? html`<div class="activity-subtitle">${activity.subtitle}</div>` : ""}
+              ` : ""}
               ${!voice && !activity ? this._stateLabel(state) : ""}
             </div>` : ""}
           </div>
@@ -505,13 +535,29 @@ class UnifiedGamingCard extends LitElement {
     const voiceChannels = new Map();
     for (const e of inVoice) {
       const ch = e.discord_voice;
-      if (!voiceChannels.has(ch)) voiceChannels.set(ch, []);
-      voiceChannels.get(ch).push(e);
+      if (!voiceChannels.has(ch)) voiceChannels.set(ch, { users: [], duration: null });
+      const channelData = voiceChannels.get(ch);
+      channelData.users.push(e);
+      if (e.discord_voice_duration) {
+        channelData.duration = e.discord_voice_duration;
+      }
     }
     let offlineNotInVoice = notInVoice.filter(e => e.merged_status.status === "offline");
     if (maxOffline > 0) offlineNotInVoice = offlineNotInVoice.slice(0, maxOffline);
     let activeNotInVoice = notInVoice.filter(e => e.merged_status.status !== "offline");
     if (maxOnline > 0) activeNotInVoice = activeNotInVoice.slice(0, maxOnline);
+
+    const sortBy = this.config.sort_by || "status";
+    const viewMode = this.config.view_mode || "grid";
+    const gameGroups = new Map();
+    if (sortBy === "game") {
+      for (const e of activeNotInVoice) {
+        const gameName = e.merged_activity?.text || e.merged_game?.game || null;
+        const key = gameName || "__no_game__";
+        if (!gameGroups.has(key)) gameGroups.set(key, []);
+        gameGroups.get(key).push(e);
+      }
+    }
 
     return html`
       <ha-card style="${cardStyle}">
@@ -525,23 +571,29 @@ class UnifiedGamingCard extends LitElement {
             : ""}
         </div>
         ${voiceChannels.size > 0
-          ? html`${Array.from(voiceChannels.entries()).map(([channel, users]) => html`
-              <div class="status-category">${channel} (${users.length})</div>
-              <div class="user-grid ${compact ? "compact" : ""}">
-                ${users.map(e => this._renderUserItem(e))}
+          ? html`${Array.from(voiceChannels.entries()).map(([channel, data]) => html`
+              <div class="status-category">${channel} (${data.users.length})${data.duration ? html`<span class="voice-duration"> · ${data.duration}</span>` : ""}</div>
+              <div class="user-grid ${compact ? "compact" : ""} ${viewMode === "list" ? "list-view" : ""}">
+                ${data.users.map(e => this._renderUserItem(e))}
               </div>`)}`
           : ""}
         ${voiceChannels.size > 0
           ? html`<div class="voice-divider"></div>` : ""}
-        ${activeNotInVoice.length > 0
-          ? html`<div class="user-grid ${compact ? "compact" : ""}">
+        ${sortBy === "game" && gameGroups.size > 0
+          ? html`${Array.from(gameGroups.entries()).map(([gameName, users]) => html`
+              ${gameName !== "__no_game__" ? html`<div class="status-category">${gameName} (${users.length})</div>` : ""}
+              <div class="user-grid ${compact ? "compact" : ""} ${viewMode === "list" ? "list-view" : ""}">
+                ${users.map(e => this._renderUserItem(e))}
+              </div>`)}`
+          : activeNotInVoice.length > 0
+          ? html`<div class="user-grid ${compact ? "compact" : ""} ${viewMode === "list" ? "list-view" : ""}">
               ${activeNotInVoice.map(e => this._renderUserItem(e))}
             </div>`
           : ""}
         ${!hideOffline && offlineNotInVoice.length > 0
           ? html`
               <div class="status-category">Offline (${offlineNotInVoice.length})</div>
-              <div class="user-grid ${compact ? "compact" : ""}">
+              <div class="user-grid ${compact ? "compact" : ""} ${viewMode === "list" ? "list-view" : ""}">
                 ${offlineNotInVoice.map(e => this._renderUserItem(e))}
               </div>`
           : ""}
@@ -609,6 +661,15 @@ class UnifiedGamingCard extends LitElement {
         opacity: 0.6;
         margin: 6px 0 4px 0;
         letter-spacing: 0.5px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .voice-duration {
+        font-weight: 400;
+        opacity: 0.8;
+        text-transform: none;
+        letter-spacing: 0;
       }
       .voice-divider {
         width: 100%;
@@ -626,6 +687,16 @@ class UnifiedGamingCard extends LitElement {
       .user-grid.compact {
         gap: 2px;
         margin-bottom: 2px;
+      }
+      .user-grid.list-view {
+        grid-template-columns: 1fr;
+        gap: 2px;
+      }
+      .user-grid.list-view .steam-multi {
+        min-height: 40px;
+      }
+      .user-grid.list-view .steam-user {
+        padding: 4px 8px;
       }
       .steam-multi {
         position: relative;
@@ -829,6 +900,22 @@ class UnifiedGamingCard extends LitElement {
         align-items: center;
         gap: 3px;
         opacity: 1;
+      }
+      .activity-text {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .activity-subtitle {
+        font-size: 0.9em;
+        opacity: 0.7;
+        margin-top: 1px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .mic-icon {
         --mdc-icon-size: 12px;
