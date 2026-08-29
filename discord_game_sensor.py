@@ -179,9 +179,11 @@ async def async_setup_entry(
                 hours = duration_seconds // 3600
                 minutes = (duration_seconds % 3600) // 60
                 if hours > 0:
-                    watcher.voice_duration = f"{hours}:{minutes:02d}"
+                    watcher.voice_duration = f"{hours}t {minutes:02d}m"
+                elif minutes > 0:
+                    watcher.voice_duration = f"{minutes}m"
                 else:
-                    watcher.voice_duration = f"{minutes}"
+                    watcher.voice_duration = "Nu"
             else:
                 watcher.voice_duration = None
             watcher.async_schedule_update_ha_state(False)
