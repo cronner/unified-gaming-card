@@ -1,0 +1,7 @@
+{
+  "tag_name": "v1.2.0",
+  "name": "v1.2.0 - Xbox support",
+  "body": "## New: Xbox support\n\n- Add `xbox` field to user profile config\n- Support **official Xbox integration** (`binary_sensor.{gamertag}`) with auto-discovery of `sensor.{gamertag}_now_playing`, `sensor.{gamertag}_status`, `image.{gamertag}_gamerpic`, `image.{gamertag}_now_playing`\n- Support **gaming_status Xbox sensor** (`sensor.gaming_status_{username}_xbox`)\n- Game priority: Discord > Xbox > Steam\n- Xbox platform badge (mdi:microsoft-xbox) with green color\n- Updated README with Xbox documentation and examples\n\n### Example\n\n```yaml\nusers:\n  - name: \"Player 1\"\n    xbox: binary_sensor.xbox_player_1\n  - name: \"Player 2\"\n    xbox: sensor.gaming_status_player_1_xbox\n    discord: sensor.discord_user_123456789\n```",
+  "draft": false,
+  "prerelease": false
+}

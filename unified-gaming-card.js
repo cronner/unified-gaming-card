@@ -418,12 +418,12 @@ class UnifiedGamingCard extends LitElement {
     const hasXbox = !!entry.xbox_entity;
     const discordOnline = hasDiscord && isOnline(entry.discord_state);
     const steamOnline = hasSteam && entry.steam_states.some(s => isOnline(s));
-    const xboxOnline = entry.xbox_state === "online";
+    const xboxOnline = hasXbox && entry.xbox_state === "online";
 
     const platforms = [];
-    if (discordOnline || hasDiscord) platforms.push("discord");
-    if (xboxOnline || hasXbox) platforms.push("xbox");
-    if (steamOnline || hasSteam) platforms.push("steam");
+    if (discordOnline) platforms.push("discord");
+    if (xboxOnline) platforms.push("xbox");
+    if (steamOnline) platforms.push("steam");
     return platforms.length > 0 ? platforms : null;
   }
 
