@@ -99,6 +99,13 @@ class UnifiedGamingCard extends LitElement {
         steam_games: [],
         steam_game_images: [],
         steam_avatars: [],
+        xbox_entity: null,
+        xbox_state: null,
+        xbox_game: null,
+        xbox_avatar: null,
+        xbox_game_images: {},
+        xbox_status: null,
+        xbox_last_online: null,
       };
 
       // Discord entity lookup
@@ -171,11 +178,73 @@ class UnifiedGamingCard extends LitElement {
         }
       }
 
+      // Xbox entity lookup (official Xbox integration or gaming_status)
+      if (profile.xbox) {
+        const xboxState = hass.states[profile.xbox];
+        if (xboxState) {
+          entry.xbox_entity = xboxState;
+          const isGamingStatus = profile.xbox.startsWith("sensor.gaming_status_") && profile.xbox.endsWith("_xbox");
+
+          if (isGamingStatus) {
+            // gaming_status Xbox sensor
+            const rawState = xboxState.state;
+            const stateMap = { "Online": "online", "Offline": "offline", "online": "online", "offline": "offline" };
+            entry.xbox_state = stateMap[rawState] || (rawState && rawState !== "unknown" && rawState !== "unavailable" ? "online" : "offline");
+            entry.xbox_game = xboxState.attributes?.current_game && xboxState.attributes.current_game !== "unknown" ? xboxState.attributes.current_game : null;
+            entry.xbox_avatar = xboxState.attributes?.entity_picture || null;
+            entry.xbox_status = xboxState.attributes?.secondary || null;
+            entry.xbox_last_online = xboxState.attributes?.last_online_valid_timestamp || null;
+            const imgs = {};
+            if (xboxState.attributes?.game_cover_art && xboxState.attributes.game_cover_art !== "unknown") imgs.header = xboxState.attributes.game_cover_art;
+            if (xboxState.attributes?.game_hero_art && xboxState.attributes.game_hero_art !== "unknown") imgs.hero = xboxState.attributes.game_hero_art;
+            if (xboxState.attributes?.game_logo_art && xboxState.attributes.game_logo_art !== "unknown") imgs.logo = xboxState.attributes.game_logo_art;
+            entry.xbox_game_images = imgs;
+          } else {
+            // Official Xbox integration: binary_sensor.{gamertag}
+            entry.xbox_state = xboxState.state === "on" ? "online" : "offline";
+            entry.xbox_avatar = xboxState.attributes?.entity_picture || null;
+
+            // Derive related entities from gamertag
+            const parts = profile.xbox.split(".");
+            const gamertag = parts[parts.length - 1];
+            const nowPlayingId = `sensor.${gamertag}_now_playing`;
+            const statusId = `sensor.${gamertag}_status`;
+            const lastOnlineId = `sensor.${gamertag}_last_online`;
+            const gamerpicId = `image.${gamertag}_gamerpic`;
+            const nowPlayingImgId = `image.${gamertag}_now_playing`;
+
+            const nowPlaying = hass.states[nowPlayingId];
+            if (nowPlaying && nowPlaying.state && nowPlaying.state !== "unknown") {
+              entry.xbox_game = nowPlaying.state;
+            }
+            const statusEnt = hass.states[statusId];
+            if (statusEnt && statusEnt.state && statusEnt.state !== "unknown") {
+              entry.xbox_status = statusEnt.state;
+            }
+            const lastOnline = hass.states[lastOnlineId];
+            if (lastOnline && lastOnline.state && lastOnline.state !== "unknown") {
+              entry.xbox_last_online = lastOnline.state;
+            }
+            const gamerpic = hass.states[gamerpicId];
+            if (gamerpic && gamerpic.attributes?.entity_picture) {
+              entry.xbox_avatar = gamerpic.attributes.entity_picture;
+            }
+            const nowPlayingImg = hass.states[nowPlayingImgId];
+            const imgs = {};
+            if (nowPlayingImg && nowPlayingImg.attributes?.entity_picture) {
+              imgs.header = nowPlayingImg.attributes.entity_picture;
+              imgs.hero = nowPlayingImg.attributes.entity_picture;
+            }
+            entry.xbox_game_images = imgs;
+          }
+        }
+      }
+
       entry.merged_status = this._mergeStatus(entry);
       entry.merged_game = this._mergeGame(entry);
       entry.merged_activity = this._mergeActivity(entry);
       entry.merged_images = this._mergeImages(entry);
-      entry.merged_avatar = entry.discord_avatar || entry.steam_avatars.find(a => a) || null;
+      entry.merged_avatar = entry.discord_avatar || entry.xbox_avatar || entry.steam_avatars.find(a => a) || null;
       entry.platform = this._getPlatform(entry);
 
       entities.push(entry);
@@ -191,32 +260,43 @@ class UnifiedGamingCard extends LitElement {
 
     const discordOnline = isOnline(ds);
     const steamOnline = sStates.some(s => isOnline(s));
+    const xboxOnline = entry.xbox_state === "online";
 
     const hasDiscord = !!entry.discord_entity;
     const hasSteam = entry.steam_entities.length > 0;
+    const hasXbox = !!entry.xbox_entity;
 
-    if (discordOnline && steamOnline) return { status: ds, platforms: "both" };
-    if (discordOnline) return { status: ds, platforms: hasSteam ? "both" : "discord" };
-    if (steamOnline) {
-      const bestSteam = sStates.find(s => isOnline(s)) || "offline";
-      return { status: bestSteam, platforms: hasDiscord ? "both" : "steam" };
+    const onlinePlatforms = [];
+    if (discordOnline) onlinePlatforms.push("discord");
+    if (xboxOnline) onlinePlatforms.push("xbox");
+    if (steamOnline) onlinePlatforms.push("steam");
+
+    if (onlinePlatforms.length > 0) {
+      const status = discordOnline ? ds : (xboxOnline ? "online" : (sStates.find(s => isOnline(s)) || "online"));
+      return { status, platforms: onlinePlatforms };
     }
 
-    // Both offline
-    const platforms = hasDiscord && hasSteam ? "both" : hasDiscord ? "discord" : "steam";
-    return { status: "offline", platforms };
+    const allPlatforms = [];
+    if (hasDiscord) allPlatforms.push("discord");
+    if (hasXbox) allPlatforms.push("xbox");
+    if (hasSteam) allPlatforms.push("steam");
+    return { status: "offline", platforms: allPlatforms };
   }
 
   _mergeGame(entry) {
     const dg = entry.discord_game && entry.discord_game !== "unknown" && entry.discord_game !== "None" ? entry.discord_game : null;
     const dgDetails = entry.discord_game_details && entry.discord_game_details !== "unknown" && entry.discord_game_details !== "None" ? entry.discord_game_details : null;
+    const xg = entry.xbox_game && entry.xbox_game !== "unknown" && entry.xbox_game !== "None" ? entry.xbox_game : null;
     for (const sg of entry.steam_games) {
       const game = sg && sg !== "unknown" && sg !== "None" ? sg : null;
       if (dg && game) return { game: dg, details: dgDetails, source: "discord" };
       if (dg) return { game: dg, details: dgDetails, source: "discord" };
+      if (xg && game) return { game: xg, details: null, source: "xbox" };
+      if (xg) return { game: xg, details: null, source: "xbox" };
       if (game) return { game, details: null, source: "steam" };
     }
     if (dg) return { game: dg, details: dgDetails, source: "discord" };
+    if (xg) return { game: xg, details: null, source: "xbox" };
     return null;
   }
 
@@ -239,6 +319,15 @@ class UnifiedGamingCard extends LitElement {
         large: watchingImg,
         hero: watchingImg,
         source: "watching",
+      };
+    }
+    const xi = entry.xbox_game_images;
+    if (hasReal(xi)) {
+      return {
+        header: xi.header || null,
+        large: xi.header || null,
+        hero: xi.hero || xi.header || null,
+        source: "xbox",
       };
     }
     for (const si of entry.steam_game_images) {
@@ -326,17 +415,16 @@ class UnifiedGamingCard extends LitElement {
     const isOnline = (s) => s && s !== "offline" && s !== "unavailable" && s !== "unknown";
     const hasDiscord = !!entry.discord_entity;
     const hasSteam = entry.steam_entities.length > 0;
+    const hasXbox = !!entry.xbox_entity;
     const discordOnline = hasDiscord && isOnline(entry.discord_state);
     const steamOnline = hasSteam && entry.steam_states.some(s => isOnline(s));
+    const xboxOnline = entry.xbox_state === "online";
 
-    if (discordOnline && steamOnline) return "both";
-    if (discordOnline) return "discord";
-    if (steamOnline) return "steam";
-
-    if (hasDiscord && hasSteam) return "both";
-    if (hasDiscord) return "discord";
-    if (hasSteam) return "steam";
-    return null;
+    const platforms = [];
+    if (discordOnline || hasDiscord) platforms.push("discord");
+    if (xboxOnline || hasXbox) platforms.push("xbox");
+    if (steamOnline || hasSteam) platforms.push("steam");
+    return platforms.length > 0 ? platforms : null;
   }
 
   _checkSteamFallbacks(entities) {
@@ -433,7 +521,7 @@ class UnifiedGamingCard extends LitElement {
   _handleAction(entry) {
     const action = this.config.click_action || "popup";
     const target = this.config.click_action_target || "";
-    const entity = entry.discord_entity || entry.steam_entities[0];
+    const entity = entry.discord_entity || entry.xbox_entity || entry.steam_entities[0];
     if (!entity) return;
 
     if (action === "navigate" && target) {
@@ -477,8 +565,9 @@ class UnifiedGamingCard extends LitElement {
               ${entry.discord_voice_self_video ? html`<ha-icon icon="mdi:webcam" class="voice-status-icon"></ha-icon>` : ""}
             </div>` : ""}
             <div class="platform-badge">
-              ${(platform === "discord" || platform === "both") ? html`<svg class="pf-icon discord" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>` : ""}
-              ${(platform === "steam" || platform === "both") ? html`<ha-icon icon="mdi:steam" class="pf-icon steam"></ha-icon>` : ""}
+              ${(platform && platform.includes("discord")) ? html`<svg class="pf-icon discord" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>` : ""}
+              ${(platform && platform.includes("xbox")) ? html`<ha-icon icon="mdi:microsoft-xbox" class="pf-icon xbox"></ha-icon>` : ""}
+              ${(platform && platform.includes("steam")) ? html`<ha-icon icon="mdi:steam" class="pf-icon steam"></ha-icon>` : ""}
             </div>
           </div>
           <div class="user-container">
@@ -820,6 +909,10 @@ class UnifiedGamingCard extends LitElement {
         color: #b8b8b8;
         --mdc-icon-color: #b8b8b8;
       }
+      .pf-icon.xbox {
+        color: #107c10;
+        --mdc-icon-color: #107c10;
+      }
       .steam-avatar.online {
         border-color: #6cff4f9d;
         box-shadow: 1px 0.5px 3px #6cff4f88;
@@ -930,5 +1023,5 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "unified-gaming-card",
   name: "Unified Gaming Card",
-  description: "Combines Discord and Steam users into one card with platform indicators, game status, and voice features.",
+  description: "Combines Discord, Xbox, and Steam users into one card with platform indicators, game status, and voice features.",
 });

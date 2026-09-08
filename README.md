@@ -1,14 +1,14 @@
 # Unified Gaming Card
 
-Custom [Home Assistant](https://www.home-assistant.io/) Lovelace card that combines [Discord Game](https://github.com/3rob3/Discord-Game) and [Steam](https://github.com/3rob3/gaming-steam-status) users into one unified card with platform indicators.
+Custom [Home Assistant](https://www.home-assistant.io/) Lovelace card that combines [Discord Game](https://github.com/3rob3/Discord-Game), [Xbox](https://www.home-assistant.io/integrations/xbox/), and [Steam](https://github.com/3rob3/gaming-steam-status) users into one unified card with platform indicators.
 
 ## Features
 
-- Combines Discord and Steam users in a single card
-- Dynamic platform icons — only shows Discord/Steam icon when user is actually online on that platform
+- Combines Discord, Xbox, and Steam users in a single card
+- Dynamic platform icons — shows Discord/Xbox/Steam icons for active platforms
 - Multiple Steam accounts per user
-- Discord status prioritized over Steam
-- Game activity from both platforms (Discord prioritized)
+- Discord status prioritized over Xbox, Xbox over Steam
+- Game activity from all platforms (Discord > Xbox > Steam)
 - **Rich Discord activity support** — shows Watching (TV/streaming), Listening (Spotify), and Streaming activities with images
 - **Game details** — shows subtitle under game name (e.g., "Ranked Match" under "Escape from Tarkov")
 - **Voice channel grouping** — users grouped by voice channel name (e.g., "Tale 1 (5) · 3:38")
@@ -99,9 +99,10 @@ users:
 |-----|------|----------|-------------|
 | `name` | string | Yes | Display name |
 | `discord` | string | No | Discord entity ID (e.g. `sensor.discord_user_123456789`) |
+| `xbox` | string | No | Xbox entity ID — either official Xbox integration (`binary_sensor.gamertag`) or gaming_status (`sensor.gaming_status_username_xbox`) |
 | `steam` | string/list | No | Steam entity ID or list of Steam entity IDs |
 
-At least one of `discord` or `steam` must be provided.
+At least one of `discord`, `xbox`, or `steam` must be provided.
 
 ## Discord Activity Display
 
@@ -180,6 +181,28 @@ users:
     discord: sensor.discord_user_987654321
 ```
 
+### Xbox support
+
+Supports both the official [Xbox integration](https://www.home-assistant.io/integrations/xbox/) and [gaming_status](https://github.com/3rob3/gaming-steam-status) Xbox sensors:
+
+```yaml
+type: custom:unified-gaming-card
+title: "Gaming"
+users:
+  - name: "Player 5"
+    xbox: binary_sensor.xbox_player_1  # Official Xbox integration
+  - name: "Player 1"
+    xbox: sensor.gaming_status_player_1_xbox  # gaming_status integration
+    discord: sensor.discord_user_123456789
+```
+
+**Official Xbox integration** (`binary_sensor.{gamertag}`):
+- Automatically discovers `sensor.{gamertag}_now_playing`, `sensor.{gamertag}_status`, `image.{gamertag}_gamerpic`, and `image.{gamertag}_now_playing`
+- Shows gamerpic as avatar and current game from now_playing sensor
+
+**gaming_status** (`sensor.gaming_status_{username}_xbox`):
+- Uses `current_game`, `game_cover_art`, `game_hero_art`, and `entity_picture` attributes
+
 ### Full featured
 
 ```yaml
@@ -229,13 +252,13 @@ sort_by: game
 view_mode: grid
 voice_status_style: overlay
 users:
-  - name: "Player 5"
-    discord: sensor.discord_user_111111111111111111
-    steam: sensor.player_2
   - name: "Player 6"
     discord: sensor.discord_user_111111111111111111
-    steam: sensor.player_3
+    steam: sensor.player_2
   - name: "Player 7"
+    discord: sensor.discord_user_111111111111111111
+    steam: sensor.player_3
+  - name: "Player 8"
     discord: sensor.discord_user_111111111111111111
     steam: sensor.player_4
 ```
