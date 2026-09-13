@@ -16,12 +16,16 @@ class UnifiedGamingCard extends LitElement {
       hass: {},
       config: {},
       _hideOffline: { type: Boolean },
+      _selectedPlayer: { state: true },
     };
   }
 
   constructor() {
     super();
     this._hideOffline = false;
+    this._selectedPlayer = null;
+    this._sessionObservations = new Map();
+    this._imageFallbacks = new Map();
   }
 
   static getStubConfig() {
@@ -38,20 +42,51 @@ class UnifiedGamingCard extends LitElement {
       compact_mode: false,
       voice_highlight_color: "",
       voice_text_color: "",
-      voice_status_style: "overlay",
+      voice_status_style: "inline",
       view_mode: "grid",
+      image_source: "auto",
     };
   }
 
   setConfig(config) {
+    if (!["auto", "standard"].includes(config.image_source ?? "auto")) {
+      throw new Error('image_source must be "auto" or "standard"');
+    }
+    this._closeDetails();
+    this._sessionObservations.clear();
+    this._imageFallbacks.clear();
     this.config = config;
+    if (this._hass) this.hass = this._hass;
   }
 
   set hass(hass) {
     this._hass = hass;
     this._entities = this._buildEntities(hass);
     this._checkSteamFallbacks(this._entities);
+    this._syncSessionTimer();
     this.requestUpdate();
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this._syncSessionTimer();
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    clearInterval(this._sessionTimer);
+    this._sessionTimer = null;
+    this._closeDetails();
+  }
+
+  _syncSessionTimer() {
+    const active = this.isConnected && this._entities?.some(e => e.session_start);
+    if (active && !this._sessionTimer) {
+      this._sessionTimer = setInterval(() => this.requestUpdate(), 60000);
+    } else if (!active) {
+      clearInterval(this._sessionTimer);
+      this._sessionTimer = null;
+    }
   }
 
   get hass() {
@@ -59,11 +94,12 @@ class UnifiedGamingCard extends LitElement {
   }
 
   _buildEntities(hass) {
-    const users = this.config.users || [];
+    const users = this.config?.users || [];
     const entities = [];
 
     for (const profile of users) {
       const entry = {
+        profile_index: entities.length,
         name: profile.name || "Unknown",
         discord_entity: null,
         steam_entities: [],
@@ -156,6 +192,11 @@ class UnifiedGamingCard extends LitElement {
           } else if (entry.discord_voice_sensor !== "unknown" && entry.discord_voice_sensor !== "None") {
             entry.discord_voice = entry.discord_voice_sensor;
           }
+          const attrs = baseState.attributes || {};
+          if (typeof attrs.voice_self_muted === "boolean") entry.discord_voice_mute = attrs.voice_self_muted;
+          if (typeof attrs.voice_self_deafened === "boolean") entry.discord_voice_deaf = attrs.voice_self_deafened;
+          if (typeof attrs.voice_streaming === "boolean") entry.discord_voice_stream = attrs.voice_streaming;
+          entry.discord_voice_self_video = attrs.voice_broadcasting_video === true;
         }
       }
 
@@ -174,6 +215,7 @@ class UnifiedGamingCard extends LitElement {
           const imgs = {};
           if (steamState.attributes?.game_image_header) imgs.header = steamState.attributes.game_image_header;
           if (steamState.attributes?.game_image_main) imgs.main = steamState.attributes.game_image_main;
+          imgs.hero = this._steamHero(steamState.attributes);
           entry.steam_game_images.push(imgs);
         }
       }
@@ -194,11 +236,7 @@ class UnifiedGamingCard extends LitElement {
             entry.xbox_avatar = xboxState.attributes?.entity_picture || null;
             entry.xbox_status = xboxState.attributes?.secondary || null;
             entry.xbox_last_online = xboxState.attributes?.last_online_valid_timestamp || null;
-            const imgs = {};
-            if (xboxState.attributes?.game_cover_art && xboxState.attributes.game_cover_art !== "unknown") imgs.header = xboxState.attributes.game_cover_art;
-            if (xboxState.attributes?.game_hero_art && xboxState.attributes.game_hero_art !== "unknown") imgs.hero = xboxState.attributes.game_hero_art;
-            if (xboxState.attributes?.game_logo_art && xboxState.attributes.game_logo_art !== "unknown") imgs.logo = xboxState.attributes.game_logo_art;
-            entry.xbox_game_images = imgs;
+            // Gaming Status artwork is appended after native sources in _mergeImages.
           } else {
             // Official Xbox integration: binary_sensor.{gamertag}
             entry.xbox_state = xboxState.state === "on" ? "online" : "offline";
@@ -242,8 +280,9 @@ class UnifiedGamingCard extends LitElement {
 
       entry.merged_status = this._mergeStatus(entry);
       entry.merged_game = this._mergeGame(entry);
+      entry.session_start = this._sessionStart(profile, entry, hass);
       entry.merged_activity = this._mergeActivity(entry);
-      entry.merged_images = this._mergeImages(entry);
+      entry.merged_images = this._mergeImages(entry, hass);
       entry.merged_avatar = entry.discord_avatar || entry.xbox_avatar || entry.steam_avatars.find(a => a) || null;
       entry.platform = this._getPlatform(entry);
 
@@ -251,6 +290,55 @@ class UnifiedGamingCard extends LitElement {
     }
 
     return entities;
+  }
+
+  _timestamp(value) {
+    // Only sourced, timezone-qualified timestamps; never presence last_changed.
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
+    const [year, month, day, hour] = value.match(/\d+/g).map(Number);
+    if (month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate() || hour > 23) return null;
+    const time = Date.parse(value);
+    return Number.isFinite(time) && time > 0 && time <= Date.now() ? time : null;
+  }
+
+  _sessionStart(profile, entry, hass) {
+    const configured = Array.isArray(profile.session_entities) ? profile.session_entities : [];
+    let ids = [...configured];
+    let result = null;
+
+    // Auto-discover gaming_status sensors when session_entities is not configured.
+    if (!ids.length && entry.merged_game) {
+      const target = entry.merged_game.game.toLowerCase();
+      for (const [eid, s] of Object.entries(hass.states)) {
+        if (!eid.startsWith("sensor.gaming_status_")) continue;
+        if (s.attributes?.current_game?.toLowerCase() === target) ids.push(eid);
+      }
+    }
+
+    for (const id of ids) {
+      if (typeof id !== "string" || !id.startsWith("sensor.gaming_status_")) continue;
+      const sensor = hass.states[id];
+      const attrs = sensor?.attributes || {};
+      const key = `${entry.profile_index}:${id}`;
+      const previous = this._sessionObservations.get(key);
+      const stale = previous?.start === attrs.play_start_time &&
+        (previous?.stale || previous?.game !== attrs.current_game);
+      this._sessionObservations.set(key, { start: attrs.play_start_time, game: attrs.current_game, stale });
+      if (stale || !entry.merged_game || entry.merged_status.status === "offline" ||
+          !sensor || ["unknown", "unavailable", "offline"].includes(sensor.state.toLowerCase()) ||
+          attrs.timer_status !== "Running" || attrs.current_game !== entry.merged_game.game) continue;
+      const start = this._timestamp(attrs.play_start_time);
+      if (start && !result) result = start;
+    }
+    return result;
+  }
+
+  _sessionElapsed(entry) {
+    const start = entry.session_start;
+    if (!Number.isFinite(start) || start <= 0 || start > Date.now()) return null;
+    const minutes = Math.floor((Date.now() - start) / 60000);
+    if (minutes < 1) return "< 1 min";
+    return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} t ${minutes % 60} min`;
   }
 
   _mergeStatus(entry) {
@@ -284,11 +372,12 @@ class UnifiedGamingCard extends LitElement {
   }
 
   _mergeGame(entry) {
-    const dg = entry.discord_game && entry.discord_game !== "unknown" && entry.discord_game !== "None" ? entry.discord_game : null;
-    const dgDetails = entry.discord_game_details && entry.discord_game_details !== "unknown" && entry.discord_game_details !== "None" ? entry.discord_game_details : null;
-    const xg = entry.xbox_game && entry.xbox_game !== "unknown" && entry.xbox_game !== "None" ? entry.xbox_game : null;
+    const valid = value => typeof value === "string" && value.trim() && !["unknown", "unavailable", "none"].includes(value.toLowerCase()) ? value : null;
+    const dg = valid(entry.discord_game);
+    const dgDetails = valid(entry.discord_game_details);
+    const xg = valid(entry.xbox_game);
     for (const sg of entry.steam_games) {
-      const game = sg && sg !== "unknown" && sg !== "None" ? sg : null;
+      const game = valid(sg);
       if (dg && game) return { game: dg, details: dgDetails, source: "discord" };
       if (dg) return { game: dg, details: dgDetails, source: "discord" };
       if (xg && game) return { game: xg, details: null, source: "xbox" };
@@ -300,56 +389,91 @@ class UnifiedGamingCard extends LitElement {
     return null;
   }
 
-  _mergeImages(entry) {
-    const di = entry.discord_game_images;
-    const hasReal = (obj) => obj && Object.values(obj).some(v => v && v !== "unknown");
+  _imageUrl(value) {
+    if (typeof value !== "string") return null;
+    value = value.trim();
+    if (!value || /^(unknown|unavailable|none|null)$/i.test(value)) return null;
+    try {
+      const url = new URL(value, window.location.origin);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+      // HA cache artwork belongs to this HA origin, never a third-party proxy/CDN.
+      if (url.pathname.startsWith("/local/gaming_status_cache/")) return url.pathname + url.search;
+      if (!/^https?:\/\//i.test(value) && !/^\/(?!\/)/.test(value)) return null;
+      return value;
+    } catch (_) {
+      return null;
+    }
+  }
 
-    if (hasReal(di)) {
-      return {
-        header: di.header || di.capsule || null,
-        large: di.large || di.header || null,
-        hero: di.hero || di.header || null,
-        source: "discord",
-      };
+  _artTitle(value) {
+    // Artwork only: do not broaden the separate session timestamp matching.
+    return typeof value === "string" ? value.replace(/[\u2122\u00ae]/g, "").toLowerCase().replace(/\s+/g, " ").trim() : "";
+  }
+
+  _steamHero(attrs = {}) {
+    let appId = /^[1-9]\d*$/.test(String(attrs.game_id)) ? String(attrs.game_id) : null;
+    for (const value of [attrs.game_image_header, attrs.game_image_main]) {
+      if (appId) break;
+      try {
+        const url = new URL(value);
+        if (url.protocol !== "https:" || url.username || url.password ||
+            !/^(?:[a-z0-9-]+\.)*(?:steamstatic\.com|steamcdn-a\.akamaihd\.net|steampowered\.com)$/.test(url.hostname)) continue;
+        appId = url.pathname.match(/^\/(?:steam\/apps|store_item_assets\/steam\/apps|app)\/([1-9]\d*)(?:\/|$)/)?.[1];
+      } catch (_) { /* No trusted app ID in this URL. */ }
     }
-    const watchingImg = entry.discord_watching_image_large;
-    if (watchingImg && watchingImg !== "unknown") {
-      return {
-        header: watchingImg,
-        large: watchingImg,
-        hero: watchingImg,
-        source: "watching",
-      };
-    }
+    return appId ? `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/library_hero.jpg` : null;
+  }
+
+  _mergeImages(entry, hass) {
+    const di = entry.discord_game_images;
     const xi = entry.xbox_game_images;
-    if (hasReal(xi)) {
-      return {
-        header: xi.header || null,
-        large: xi.header || null,
-        hero: xi.hero || xi.header || null,
-        source: "xbox",
-      };
+    const title = this._artTitle(entry.merged_game?.game);
+    const matches = game => title && this._artTitle(game) === title;
+    const groups = [
+      ["discord", matches(entry.discord_game) ? [di.hero, di.header, di.large, di.capsule] : []],
+      ["watching", !title ? [entry.discord_watching_image_large] : []],
+      ["xbox", matches(entry.xbox_game) ? [xi.hero, xi.header, xi.logo] : []],
+      ...entry.steam_game_images.map((si, i) => ["steam", matches(entry.steam_games[i]) ? [si.header, si.main] : []]),
+      ...entry.steam_game_images.map((si, i) => ["steam", matches(entry.steam_games[i]) ? [si.hero] : []]),
+      ["spotify", !title ? [entry.discord_spotify_album_cover_url] : []],
+    ];
+    let source = null;
+    let candidates = [];
+    // Keep every matching native candidate, with supplied art before derived heroes.
+    for (const [name, urls] of groups) {
+      const valid = urls.map(url => this._imageUrl(url)).filter(Boolean);
+      if (valid.length) { source ||= name; candidates.push(...valid); }
     }
-    for (const si of entry.steam_game_images) {
-      if (hasReal(si)) {
-        return {
-          header: si.header || si.main || null,
-          large: si.header || si.main || null,
-          hero: si.header || si.main || null,
-          source: "steam",
-        };
+    if (this.config.image_source !== "standard" && title) {
+      const artwork = [];
+      for (const [id, sensor] of Object.entries(hass?.states || {})) {
+        if (!id.startsWith("sensor.gaming_status_") || ["unknown", "unavailable"].includes(sensor.state?.toLowerCase())) continue;
+        const attrs = sensor.attributes || {};
+        if (this._artTitle(attrs.current_game) !== title) continue;
+        artwork.push(...[attrs.game_hero_art, attrs.game_cover_art].map(url => this._imageUrl(url)).filter(Boolean));
       }
+      if (artwork.length) { candidates.push(...artwork); source ||= "gaming_status"; }
     }
-    const spotifyCover = entry.discord_spotify_album_cover_url;
-    if (spotifyCover) {
-      return {
-        header: spotifyCover,
-        large: spotifyCover,
-        hero: spotifyCover,
-        source: "spotify",
-      };
+    candidates = [...new Set(candidates)];
+    return candidates.length ? { hero: candidates[0], header: candidates[1] || candidates[0], large: candidates[2] || candidates[0], candidates, source } : null;
+  }
+
+  _backgroundImage(entry) {
+    const images = entry.merged_images;
+    const candidates = [...new Set((images?.candidates || [images?.hero, images?.header, images?.large]).map(url => this._imageUrl(url)).filter(Boolean))];
+    const key = JSON.stringify([this.config.image_source || "auto", entry.merged_game?.game, images?.source, candidates]);
+    let fallback = this._imageFallbacks.get(entry.profile_index);
+    if (fallback?.key !== key) {
+      fallback = { key, candidates, index: 0 };
+      this._imageFallbacks.set(entry.profile_index, fallback);
     }
-    return null;
+    return fallback;
+  }
+
+  _imageError(entry, fallback, url) {
+    if (this._imageFallbacks.get(entry.profile_index) !== fallback || fallback.candidates[fallback.index] !== url) return;
+    fallback.index++;
+    this.requestUpdate();
   }
 
   _mergeActivity(entry) {
@@ -428,7 +552,6 @@ class UnifiedGamingCard extends LitElement {
   }
 
   _checkSteamFallbacks(entities) {
-    const ts = Math.floor(Date.now() / 1000);
     for (const entry of entities) {
       if (entry.merged_images) continue;
       const game = entry.merged_game;
@@ -437,7 +560,7 @@ class UnifiedGamingCard extends LitElement {
       const cacheKey = game.game.toLowerCase().trim();
       if (UnifiedGamingCard._steamCache.has(cacheKey)) {
         const cached = UnifiedGamingCard._steamCache.get(cacheKey);
-        if (cached) this._applySteamImages(entry, cached, ts);
+        if (cached) this._applySteamImages(entry, cached);
         continue;
       }
       if (!UnifiedGamingCard._fetching.has(cacheKey)) {
@@ -446,13 +569,11 @@ class UnifiedGamingCard extends LitElement {
     }
   }
 
-  _applySteamImages(entry, baseUrl, ts) {
-    const sep = baseUrl.includes("?") ? "&" : "?";
-    const t = `${sep}t=${ts}`;
+  _applySteamImages(entry, baseUrl) {
     entry.merged_images = {
-      header: `${baseUrl}/header.jpg${t}`,
-      large: `${baseUrl}/capsule_616x353.jpg${t}`,
-      hero: `${baseUrl}/library_hero.jpg${t}`,
+      header: `${baseUrl}/header.jpg`,
+      large: `${baseUrl}/capsule_616x353.jpg`,
+      hero: `${baseUrl}/library_hero.jpg`,
       source: "steam_lookup",
     };
   }
@@ -468,6 +589,7 @@ class UnifiedGamingCard extends LitElement {
       const appId = data.items[0].id;
       const baseUrl = `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}`;
       UnifiedGamingCard._steamCache.set(cacheKey, baseUrl);
+      this._checkSteamFallbacks(this._entities || []);
       this.requestUpdate();
     } catch (e) {
       UnifiedGamingCard._steamCache.set(cacheKey, null);
@@ -518,22 +640,80 @@ class UnifiedGamingCard extends LitElement {
     }
   }
 
-  _handleAction(entry) {
+  _handleAction(entry, trigger) {
     const action = this.config.click_action || "popup";
     const target = this.config.click_action_target || "";
-    const entity = entry.discord_entity || entry.xbox_entity || entry.steam_entities[0];
-    if (!entity) return;
-
-    if (action === "navigate" && target) {
+    if (action === "navigate") {
+      if (!target) return;
       history.pushState(null, "", target);
       window.dispatchEvent(new Event("location-changed", { composed: true }));
-    } else if (action === "toggle" && target) {
+    } else if (action === "toggle") {
+      if (!target) return;
       this.hass.callService(target.split(".")[0], "toggle", { entity_id: target });
-    } else {
+    } else if (action === "more-info") {
+      const entity = entry.discord_entity || entry.xbox_entity || entry.steam_entities[0];
+      if (!entity) return;
       const event = new Event("hass-more-info", { composed: true });
       event.detail = { entityId: entity.entity_id };
       this.dispatchEvent(event);
+    } else if (action === "popup") {
+      this._popupTrigger = trigger;
+      this._selectedPlayer = entry.profile_index;
     }
+  }
+
+  updated() {
+    const dialog = this.renderRoot?.querySelector("dialog");
+    if (this._selectedPlayer != null && dialog && !dialog.open) dialog.showModal();
+  }
+
+  _closeDetails() {
+    this._selectedPlayer = null;
+    this.renderRoot?.querySelector("dialog")?.close();
+    this._popupTrigger?.focus();
+    this._popupTrigger = null;
+  }
+
+  _renderDetails() {
+    const entry = this._selectedPlayer == null ? null : this._entities?.find(e => e.profile_index === this._selectedPlayer);
+    if (!entry) return "";
+    const has = value => typeof value === "string" && value.trim() && !["unknown", "unavailable", "none"].includes(value.toLowerCase());
+    const elapsed = this._sessionElapsed(entry);
+    const lastOnline = value => {
+      const time = this._timestamp(value);
+      return time ? new Intl.DateTimeFormat("da-DK", {
+        dateStyle: "medium", timeStyle: "short", timeZone: this.hass.config?.time_zone || "Europe/Copenhagen",
+      }).format(time) : null;
+    };
+    const platforms = [
+      ...(entry.discord_entity ? [{ name: "Discord", state: entry.discord_state, game: entry.discord_game }] : []),
+      ...entry.steam_entities.map((sensor, i) => ({ name: entry.steam_entities.length > 1 ? `Steam ${i + 1}` : "Steam", state: sensor.state, game: entry.steam_games[i], last: lastOnline(sensor.attributes?.last_online) })),
+      ...(entry.xbox_entity ? [{ name: "Xbox", state: ["unknown", "unavailable"].includes(entry.xbox_entity.state) ? entry.xbox_entity.state : entry.xbox_state, game: entry.xbox_game, last: lastOnline(entry.xbox_last_online) }] : []),
+    ];
+    return html`
+      <dialog aria-labelledby="player-details-title" @cancel=${event => { event.preventDefault(); this._closeDetails(); }}
+        @close=${this._closeDetails} @click=${event => {
+          if (event.target !== event.currentTarget) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) this._closeDetails();
+        }}>
+        <div class="details-header"><h2 id="player-details-title">${entry.name}</h2>
+          <button type="button" autofocus @click=${this._closeDetails} aria-label="Luk spillerdetaljer">Luk</button></div>
+        ${entry.merged_game ? html`<p class="details-game">${entry.merged_game.game}${elapsed ? html`<span class="session-elapsed"> · ${elapsed}</span>` : ""}</p>` : ""}
+        ${elapsed ? html`<p class="details-note">Sessionstid fra Gaming Status</p>` : ""}
+        ${has(entry.merged_game?.details) ? html`<p>${entry.merged_game.details}</p>` : ""}
+        <dl>${platforms.map(platform => html`
+          <dt>${platform.name}</dt><dd>${platform.state === "unavailable" ? "Utilgængelig" : platform.state === "unknown" ? "Ukendt" : this._stateLabel(({ away: "idle", snooze: "dnd" })[platform.state] || platform.state)}
+            ${has(platform.game) ? html`<div>${platform.game}</div>` : ""}
+            ${platform.last ? html`<div class="details-note">Sidst online: ${platform.last}</div>` : ""}</dd>`)}
+          ${has(entry.discord_voice) ? html`<dt>Voice</dt><dd>${entry.discord_voice}
+            ${has(entry.discord_voice_duration) ? html`<div>${entry.discord_voice_duration}</div>` : ""}
+            ${entry.discord_voice_mute ? html`<div>Mikrofon slået fra</div>` : ""}
+            ${entry.discord_voice_deaf ? html`<div>Lyd slået fra</div>` : ""}
+            ${entry.discord_voice_stream ? html`<div>Deler skærm</div>` : ""}
+            ${entry.discord_voice_self_video ? html`<div>Kamera aktivt</div>` : ""}</dd>` : ""}
+        </dl>
+      </dialog>`;
   }
 
   _renderUserItem(entry) {
@@ -541,17 +721,21 @@ class UnifiedGamingCard extends LitElement {
     const platform = entry.platform;
     const game = entry.merged_game;
     const activity = entry.merged_activity;
-    const images = entry.merged_images;
     const avatar = entry.merged_avatar;
     const voice = entry.discord_voice;
     const compact = this.config.compact_mode;
-    const voiceStyle = this.config.voice_status_style || "overlay";
+    const voiceStyle = this.config.voice_status_style || "inline";
+    const elapsed = game ? this._sessionElapsed(entry) : null;
 
-    let bgImg = compact ? null : (images ? (images.hero || images.header || images.large) : null);
+    const fallback = this._backgroundImage(entry);
+    const bgImg = compact ? null : fallback.candidates[fallback.index];
 
     return html`
-      <div class="steam-multi ${voice ? "in-voice" : state} ${compact ? "compact" : ""} ${activity ? "has-activity" : ""}" @click=${() => this._handleAction(entry)}>
-        ${bgImg ? html`<img src="${bgImg}" class="steam-game-bg" onerror="this.style.display='none'">` : ""}
+      <div class="steam-multi ${voice ? "in-voice" : state} ${compact ? "compact" : ""} ${activity ? "has-activity" : ""}" role="button" tabindex="0" aria-label=${entry.name}
+        @click=${event => this._handleAction(entry, event.currentTarget)} @keydown=${event => {
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); this._handleAction(entry, event.currentTarget); }
+        }}>
+        ${bgImg ? html`<img src="${bgImg}" class="steam-game-bg" @error=${() => this._imageError(entry, fallback, bgImg)}>` : ""}
         <div class="steam-user ${compact ? "compact" : ""}">
           <div class="avatar-wrap ${state}">
             ${avatar ? html`<img src="${avatar}${entry.discord_entity ? '?size=128' : ''}" class="steam-avatar ${state}" onerror="this.style.display='none'">` : html`<div class="steam-avatar ${state}"></div>`}
@@ -564,6 +748,7 @@ class UnifiedGamingCard extends LitElement {
               ${entry.discord_voice_stream ? html`<ha-icon icon="mdi:monitor-shimmer" class="voice-status-icon"></ha-icon>` : ""}
               ${entry.discord_voice_self_video ? html`<ha-icon icon="mdi:webcam" class="voice-status-icon"></ha-icon>` : ""}
             </div>` : ""}
+            
             <div class="platform-badge">
               ${(platform && platform.includes("discord")) ? html`<svg class="pf-icon discord" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>` : ""}
               ${(platform && platform.includes("xbox")) ? html`<ha-icon icon="mdi:microsoft-xbox" class="pf-icon xbox"></ha-icon>` : ""}
@@ -586,7 +771,8 @@ class UnifiedGamingCard extends LitElement {
               ${activity ? html`
                 <div class="activity-text">
                   ${activity.icon ? html`<ha-icon icon="${activity.icon}" class="mic-icon"></ha-icon>` : ""}
-                  <span>${activity.text}</span>
+                  <span class="activity-name">${activity.text}</span>
+                  ${elapsed && activity.type === "game" ? html`<span class="session-elapsed" title="Sessionstid fra Gaming Status"> · ${elapsed}</span>` : ""}
                 </div>
                 ${activity.subtitle ? html`<div class="activity-subtitle">${activity.subtitle}</div>` : ""}
               ` : ""}
@@ -620,7 +806,8 @@ class UnifiedGamingCard extends LitElement {
     const groups = this._sortByStatus(filtered);
     const allUsers = [...groups.online, ...groups.idle, ...groups.dnd, ...groups.unavailable, ...groups.offline];
     const inVoice = allUsers.filter(e => e.discord_voice && e.discord_voice !== "unknown");
-    const notInVoice = allUsers.filter(e => !e.discord_voice || e.discord_voice === "unknown");
+    const gamingFirst = (a, b) => Number(!!b.merged_game) - Number(!!a.merged_game);
+    const notInVoice = allUsers.filter(e => !e.discord_voice || e.discord_voice === "unknown").sort(gamingFirst);
     const voiceChannels = new Map();
     for (const e of inVoice) {
       const ch = e.discord_voice;
@@ -636,17 +823,8 @@ class UnifiedGamingCard extends LitElement {
     let activeNotInVoice = notInVoice.filter(e => e.merged_status.status !== "offline");
     if (maxOnline > 0) activeNotInVoice = activeNotInVoice.slice(0, maxOnline);
 
-    const sortBy = this.config.sort_by || "status";
     const viewMode = this.config.view_mode || "grid";
-    const gameGroups = new Map();
-    if (sortBy === "game") {
-      for (const e of activeNotInVoice) {
-        const gameName = e.merged_activity?.text || e.merged_game?.game || null;
-        const key = gameName || "__no_game__";
-        if (!gameGroups.has(key)) gameGroups.set(key, []);
-        gameGroups.get(key).push(e);
-      }
-    }
+    const visibleUsers = [...activeNotInVoice, ...(!hideOffline ? offlineNotInVoice : [])].sort(gamingFirst);
 
     return html`
       <ha-card style="${cardStyle}">
@@ -668,25 +846,13 @@ class UnifiedGamingCard extends LitElement {
           : ""}
         ${voiceChannels.size > 0
           ? html`<div class="voice-divider"></div>` : ""}
-        ${sortBy === "game" && gameGroups.size > 0
-          ? html`${Array.from(gameGroups.entries()).map(([gameName, users]) => html`
-              ${gameName !== "__no_game__" ? html`<div class="status-category">${gameName} (${users.length})</div>` : ""}
-              <div class="user-grid ${compact ? "compact" : ""} ${viewMode === "list" ? "list-view" : ""}">
-                ${users.map(e => this._renderUserItem(e))}
-              </div>`)}`
-          : activeNotInVoice.length > 0
+        ${visibleUsers.length > 0
           ? html`<div class="user-grid ${compact ? "compact" : ""} ${viewMode === "list" ? "list-view" : ""}">
-              ${activeNotInVoice.map(e => this._renderUserItem(e))}
+              ${visibleUsers.map(e => this._renderUserItem(e))}
             </div>`
           : ""}
-        ${!hideOffline && offlineNotInVoice.length > 0
-          ? html`
-              <div class="status-category">Offline (${offlineNotInVoice.length})</div>
-              <div class="user-grid ${compact ? "compact" : ""} ${viewMode === "list" ? "list-view" : ""}">
-                ${offlineNotInVoice.map(e => this._renderUserItem(e))}
-              </div>`
-          : ""}
       </ha-card>
+      ${this._renderDetails()}
     `;
   }
 
@@ -700,6 +866,31 @@ class UnifiedGamingCard extends LitElement {
 
   static get styles() {
     return css`
+      dialog {
+        box-sizing: border-box;
+        width: min(480px, calc(100vw - 32px));
+        max-height: calc(100dvh - 32px);
+        overflow: auto;
+        padding: 20px;
+        border: 1px solid var(--divider-color, #555);
+        border-radius: 16px;
+        color: var(--primary-text-color);
+        background: var(--card-background-color, #1c1c1c);
+        box-shadow: 0 12px 48px #0008;
+        overflow-wrap: anywhere;
+      }
+      dialog::backdrop { background: #0009; }
+      .details-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+      .details-header h2 { margin: 0; font-size: 1.3em; }
+      .details-header button { min-height: 44px; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--divider-color, #777); background: transparent; color: inherit; font: inherit; cursor: pointer; }
+      .steam-multi:focus-visible, button:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }
+      .details-game { font-weight: 600; margin-bottom: 4px; }
+      .details-note { font-size: 0.85em; color: var(--secondary-text-color); }
+      dialog dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; margin-bottom: 0; }
+      dialog dt { font-weight: 600; }
+      dialog dd { margin: 0; }
+      .activity-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .session-elapsed { flex-shrink: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
       ha-card {
         padding: 16px;
         display: flex;
@@ -941,7 +1132,7 @@ class UnifiedGamingCard extends LitElement {
       .steam-name-row {
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 3px;
         width: 100%;
         min-width: 0;
       }
@@ -951,9 +1142,8 @@ class UnifiedGamingCard extends LitElement {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        flex: 1;
+        flex: 0 1 auto;
         min-width: 0;
-        max-width: 60%;
       }
       .steam-multi.compact .steam-username {
         font-size: 0.78em;
@@ -964,7 +1154,7 @@ class UnifiedGamingCard extends LitElement {
       .steam-voice-inline {
         display: flex;
         align-items: center;
-        gap: 3px;
+        gap: 1px;
         flex-shrink: 0;
       }
       .voice-inline-icon {
