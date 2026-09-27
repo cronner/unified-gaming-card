@@ -70,6 +70,9 @@ is omitted; the card, platform status, and artwork still work normally.
 
 ### Users
 
+All player names, account references, and repeated-digit Discord IDs below are
+fictional placeholders. Replace them with your own entity IDs before use.
+
 Define users manually with optional Discord, Steam, and Xbox entity references:
 
 ```yaml
@@ -77,23 +80,23 @@ type: custom:unified-gaming-card
 title: "Gaming"
 users:
   - name: "Player 1"
-    discord: sensor.discord_user_123456789
+    discord: sensor.discord_user_111111111111111111
     steam: sensor.steam_player_1
   - name: "Player 2"
-    discord: sensor.discord_user_987654321
+    discord: sensor.discord_user_222222222222222222
   - name: "Player 3"
-    steam: sensor.steam_player_2
+    steam: sensor.steam_player_3
 ```
 
 Multiple Steam accounts per user:
 
 ```yaml
 users:
-  - name: "Player 4"
-    discord: sensor.discord_user_123456789
+  - name: "Player 1"
+    discord: sensor.discord_user_111111111111111111
     steam:
-      - sensor.steam_player_3_second
-      - sensor.steam_player_4
+      - sensor.steam_player_1_secondary
+      - sensor.steam_player_1
 ```
 
 ### Options
@@ -122,7 +125,7 @@ users:
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
 | `name` | string | Yes | Display name |
-| `discord` | string | No | Discord entity ID (e.g. `sensor.discord_user_123456789`) |
+| `discord` | string | No | Discord entity ID (e.g. `sensor.discord_user_111111111111111111`) |
 | `xbox` | string | No | Xbox entity ID — either official Xbox integration (`binary_sensor.gamertag`) or gaming_status (`sensor.gaming_status_username_xbox`) |
 | `steam` | string/list | No | Steam entity ID or list of Steam entity IDs |
 | `session_entities` | list | No | Explicit Gaming Status sensors belonging to this player, in priority order |
@@ -253,7 +256,7 @@ Shows how long the voice call has been active. Updates every minute.
 
 **Requires:** Modified `discord_game` integration with voice duration tracking (included in this repo as `discord_game_sensor.py`).
 
-**New sensor:** `sensor.player_1<id>_voice_duration`
+**New sensor:** `sensor.discord_user_<id>_voice_duration`
 
 ## Examples
 
@@ -264,10 +267,10 @@ type: custom:unified-gaming-card
 title: "Gaming"
 users:
   - name: "Player 1"
-    discord: sensor.discord_user_123456789
+    discord: sensor.discord_user_111111111111111111
     steam: sensor.steam_player_1
   - name: "Player 2"
-    discord: sensor.discord_user_987654321
+    discord: sensor.discord_user_222222222222222222
 ```
 
 ### Xbox support
@@ -278,11 +281,11 @@ Supports both the official [Xbox integration](https://www.home-assistant.io/inte
 type: custom:unified-gaming-card
 title: "Gaming"
 users:
-  - name: "Player 5"
-    xbox: binary_sensor.xbox_player_1  # Official Xbox integration
   - name: "Player 1"
-    xbox: sensor.gaming_status_player_1_xbox  # gaming_status integration
-    discord: sensor.discord_user_123456789
+    xbox: binary_sensor.xbox_player_1  # Official Xbox integration
+  - name: "Player 2"
+    xbox: sensor.gaming_status_player_2_xbox  # Gaming Status integration
+    discord: sensor.discord_user_222222222222222222
 ```
 
 **Official Xbox integration** (`binary_sensor.{gamertag}`):
@@ -299,14 +302,14 @@ type: custom:unified-gaming-card
 title: "Gaming"
 users:
   - name: "Player 1"
-    discord: sensor.discord_user_123456789
+    discord: sensor.discord_user_111111111111111111
     steam: sensor.steam_player_1
     session_entities:
       - sensor.gaming_status_player_1_steam
   - name: "Player 2"
-    discord: sensor.discord_user_987654321
+    discord: sensor.discord_user_222222222222222222
   - name: "Player 3"
-    steam: sensor.steam_player_2
+    steam: sensor.steam_player_3
 hide_offline: false
 show_toggle: true
 max_online: 10
@@ -330,7 +333,7 @@ view_mode: list
 voice_status_style: inline
 users:
   - name: "Player 1"
-    discord: sensor.discord_user_123456789
+    discord: sensor.discord_user_111111111111111111
     steam: sensor.steam_player_1
 ```
 
@@ -345,39 +348,39 @@ view_mode: grid
 voice_status_style: inline
 image_source: auto
 users:
-  - name: "Player 6"
+  - name: "Player 1"
     discord: sensor.discord_user_111111111111111111
-    steam: sensor.player_2
+    steam: sensor.steam_player_1
     session_entities:
-      - sensor.gaming_status_player_2_steam
-      - sensor.gaming_status_player_2_discord
-  - name: "Player 7"
-    discord: sensor.discord_user_111111111111111111
-    steam: sensor.player_3
-  - name: "Player 8"
-    discord: sensor.discord_user_111111111111111111
-    steam: sensor.player_4
+      - sensor.gaming_status_player_1_steam
+      - sensor.gaming_status_player_1_discord
+  - name: "Player 2"
+    discord: sensor.discord_user_222222222222222222
+    steam: sensor.steam_player_2
+  - name: "Player 3"
+    discord: sensor.discord_user_333333333333333333
+    steam: sensor.steam_player_3
 ```
 
 ## Requirements
 
 - [Discord Game](https://github.com/3rob3/Discord-Game) custom component (for Discord users)
-  - **Voice duration tracking**: Requires modified `sensor.player_5` (included in this repo as `discord_game_sensor.py`)
+  - **Voice duration tracking**: Requires modified `sensor.py` (included in this repo as `discord_game_sensor.py`)
 - [Steam](https://github.com/3rob3/gaming-steam-status) integration (for Steam users, optional)
 - [gaming_status](https://github.com/3rob3/gaming-steam-status) (optional) — enables session times, locally cached artwork backup, and gaming_status Xbox sensors
 
 ## Voice Duration Tracking
 
-To enable voice duration tracking, replace the `sensor.player_5` file in your `discord_game` custom component with the modified version from this repo (`discord_game_sensor.py`).
+To enable voice duration tracking, replace the `sensor.py` file in your `discord_game` custom component with the modified version from this repo (`discord_game_sensor.py`).
 
 **Features:**
 - Tracks when users join/leave voice channels
 - Updates duration every minute
-- Creates new sensor: `sensor.player_1<id>_voice_duration`
+- Creates new sensor: `sensor.discord_user_<id>_voice_duration`
 - Format: `"45"` (minutes) or `"1:45"` (hours:minutes)
 
 **Installation:**
-1. Copy `discord_game_sensor.py` to `custom_components/discord_game/sensor.player_5`
+1. Copy `discord_game_sensor.py` to `custom_components/discord_game/sensor.py`
 2. Restart Home Assistant
 3. New sensors will be created automatically
 
@@ -385,12 +388,21 @@ To enable voice duration tracking, replace the `sensor.player_5` file in your `d
 
 ```sh
 node --check unified-gaming-card.js
-node --test tests/card.test.mjs
+node --test tests/*.test.mjs
+node scripts/check-privacy.mjs
 ```
 
 Tests cover player-safe session association, Steam presence, offline toggling,
 artwork fallback and provenance, Steam lookup throttling/title matching,
 voice-group sorting, update filtering, and editor config preservation.
+
+Before publishing, run the privacy check. Documentation and release examples must
+use `Player 1`, `sensor.steam_player_1`, `binary_sensor.xbox_player_1`, and similar
+generic entity IDs. Discord IDs must be repeated-digit placeholders. The checker
+also accepts explicit file paths, for example an exported release JSON file.
+It reports categories without printing detected values. These checks cover known
+example patterns, not arbitrary prose, screenshots, Git history, or remote releases
+unless their text is supplied explicitly.
 
 For an optional real-browser smoke test, serve the repository with
 `python3 -m http.server 8000` and open `http://localhost:8000/tests/browser.html`.
