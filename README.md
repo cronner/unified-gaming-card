@@ -11,10 +11,10 @@ Custom [Home Assistant](https://www.home-assistant.io/) Lovelace card that combi
 - Game activity from all platforms (Discord > Xbox > Steam)
 - **Rich Discord activity support** — shows Watching (TV/streaming), Listening (Spotify), and Streaming activities with images
 - **Game details** — shows subtitle under game name (e.g., "Ranked Match" under "Escape from Tarkov")
-- **Gamers-first layout** — users currently playing a game are listed first, even across voice-channel grouping
+- **Gamers-first layout** — users currently playing a game are listed first within each voice channel and the non-voice list
 - **Voice channel grouping** — users grouped by voice channel name (e.g., "Tale 1 (5) · 3:38")
 - **Voice duration tracking** — shows how long voice call has been active (updates every minute)
-- **Game grouping** — groups users playing the same game when `sort_by: game`
+- **Game sorting** — sort by activity with `sort_by: game`, without separate game headings
 - Voice status icons — mute, deaf, stream, and webcam indicators on avatars (overlay or inline)
 - Voice channel fallback — reads from base entity attributes when sub-entity is unknown
 - Offline users in voice calls get red avatar highlight
@@ -30,6 +30,9 @@ Custom [Home Assistant](https://www.home-assistant.io/) Lovelace card that combi
 - Sort by status, name, or game
 - Click actions (popup, navigate, toggle)
 - Custom status display with emoji
+- Visual editor for players, image options, voice icons, layout, and custom artwork
+- Current artwork source and image link in the player popup
+- Shared entity indexing and skipped player rebuilds for unrelated HA updates
 
 ## Installation
 
@@ -49,6 +52,21 @@ Then add the resource in **Settings > Dashboards > Resources**:
 | `/local/community/unified-gaming-card/unified-gaming-card.js` | JavaScript Module |
 
 ## Configuration
+
+### Visual editor
+
+Open **Edit dashboard → Edit card** to use the visual editor. Add/remove players,
+select Discord/Xbox entity IDs, enter one or more Steam and session entity IDs,
+choose artwork behavior and voice icon position, and set custom images per game.
+Advanced YAML fields not shown in the editor are preserved.
+
+### Upgrading from v1.3.0
+
+Session discovery by game title was unsafe: two players playing the same game
+could receive the same player's start time. Set `session_entities` for each player
+whose session time you want to show. An explicitly configured Gaming Status Xbox
+sensor can also provide its own session. Without a safe player link, the timer
+is omitted; the card, platform status, and artwork still work normally.
 
 ### Users
 
@@ -88,7 +106,7 @@ users:
 | `show_toggle` | boolean | `true` | Show the eye toggle button |
 | `max_online` | number | `0` | Max active users to show (0 = unlimited) |
 | `max_offline` | number | `0` | Max offline users to show (0 = unlimited) |
-| `sort_by` | string | `"status"` | Sort by `status`, `name`, or `game` (game groups users by activity) |
+| `sort_by` | string | `"status"` | Sort by `status`, `name`, or `game`; gamers stay first within voice and non-voice groups |
 | `click_action` | string | `"popup"` | Click action: `popup`, `navigate`, `toggle`, `more-info`, or `none` |
 | `click_action_target` | string | `""` | Target for navigate/toggle |
 | `compact_mode` | boolean | `false` | Minimal layout without background images |
@@ -97,6 +115,7 @@ users:
 | `voice_text_color` | string | `""` | Custom color for voice channel text (default: `#4081e4`) |
 | `voice_status_style` | string | `"inline"` | Voice status icon position: `inline` (after name) or `overlay` (on avatar) |
 | `image_source` | string | `"auto"` | Artwork source priority: `auto` (native Discord/Xbox/Steam, then gaming_status as backup) or `standard` (never use gaming_status) |
+| `game_images` | mapping | empty | Game title → custom image URL; tried before automatic artwork in either mode |
 
 ### User Profile
 
@@ -106,16 +125,17 @@ users:
 | `discord` | string | No | Discord entity ID (e.g. `sensor.discord_user_123456789`) |
 | `xbox` | string | No | Xbox entity ID — either official Xbox integration (`binary_sensor.gamertag`) or gaming_status (`sensor.gaming_status_username_xbox`) |
 | `steam` | string/list | No | Steam entity ID or list of Steam entity IDs |
-| `session_entities` | list | No | gaming_status sensors for session time (optional; auto-discovered if omitted) |
+| `session_entities` | list | No | Explicit Gaming Status sensors belonging to this player, in priority order |
 
-At least one of `discord`, `xbox`, or `steam` must be provided. `session_entities` is optional — matching gaming_status sensors are auto-discovered by game when omitted.
+At least one of `discord`, `xbox`, or `steam` must be provided. `session_entities` is optional; no session is borrowed from other players by matching a game title.
 
 ## Session Time
 
 The card shows each player's elapsed play time from [gaming_status](https://github.com/3rob3/gaming-steam-status) `play_start_time` attributes, shown next to the game name and in the details popup.
 
-- Automatically discovers matching `sensor.gaming_status_*` sensors via the currently displayed game, so **no configuration is needed** when gaming_status is installed.
-- To pin specific sensors (e.g. when only certain platforms should count), set `session_entities`:
+- Link the player's own Gaming Status sensors with `session_entities`.
+- An explicitly configured `xbox: sensor.gaming_status_...` can supply its own session if no session list is set.
+- If no valid linked session is available, no elapsed time is shown.
 
 ```yaml
 users:
@@ -126,7 +146,7 @@ users:
       - sensor.gaming_status_player_1_discord
 ```
 
-Session time is only shown when the source sensor reports `timer_status: Running`, the sensor's `current_game` matches the displayed game exactly, the player is online, and the timestamp is valid. Stopped/paused sessions, unknown/unavailable sensors, and missing or invalid timestamps are excluded. The `™`/`®` suffix difference (e.g. "STAR WARS Zero Company™" vs "STAR WARS Zero Company") does **not** break artwork matching.
+Session time is only shown when the linked sensor reports `timer_status: Running`, its game matches the displayed game, the player is online, and its timestamp is valid. Title matching ignores case, extra whitespace, and `™`/`®`. Stopped/paused sessions, unknown/unavailable sensors, and invalid timestamps are excluded. The integration's recorded session start is not a guarantee of active play time.
 
 ## Game Artwork
 
@@ -142,7 +162,24 @@ The card picks a background image for each player's game and falls back to the n
 
 Only the native sources above; gaming_status artwork is never used.
 
-The card works **100% without gaming_status installed** — it simply skips the backup step and relies on native artwork plus Steam lookups. Card-generated Steam image URLs are stable (no changing cache-busting parameters), so your browser's HTTP cache reuses them across updates. Gaming status images are served locally by Home Assistant, making them fast to load.
+Gaming Status is optional. Without it, native artwork and Steam lookups remain available. Card-generated Steam image URLs are stable, allowing normal browser HTTP caching (subject to the server's cache headers). This is not a shared server-side cache. No source can guarantee an image for every game.
+
+Steam search runs when no image candidate exists. It accepts only a unique matching title, caches failures/empty/ambiguous results for ten minutes, times out after ten seconds, and caches successes for one day. A retry can occur on a later relevant update after expiry. Browser CORS restrictions or network problems can prevent Steam search; native image URLs continue to work independently.
+
+### Custom game images
+
+```yaml
+game_images:
+  "ARK: Survival Ascended": "/local/game-art/ark.jpg"
+  "STAR WARS Zero Company": "https://example.com/zero-company.jpg"
+```
+
+Upload local files yourself under `www/` or use an HTTP(S) image URL. The card
+does not download or write files on the server. Custom images are tried first;
+failed images fall through to the normal candidates. Open the player popup to
+see the source and link of the currently selected candidate. In compact mode,
+the popup describes the available background candidate, which is not rendered
+behind the compact player row.
 
 ## Discord Activity Display
 
@@ -162,6 +199,7 @@ With the default `click_action: "popup"`, clicking a player opens a dialog with:
 - Platform status per platform (Discord / Steam / Xbox), with each platform's game and last-online time
 - The merged game and elapsed session time
 - Voice channel, voice duration, and mute/deaf/screen-sharing/camera states
+- Current image source (including custom images and Gaming Status) and an **Open image** link
 - Danish labels, native modal focus, keyboard activation (Enter/space), and Escape/backdrop close
 
 `click_action_target` is ignored for `popup`. `navigate` and `toggle` require an explicit target; `none` does nothing.
@@ -342,6 +380,22 @@ To enable voice duration tracking, replace the `sensor.player_5` file in your `d
 1. Copy `discord_game_sensor.py` to `custom_components/discord_game/sensor.player_5`
 2. Restart Home Assistant
 3. New sensors will be created automatically
+
+## Development checks
+
+```sh
+node --check unified-gaming-card.js
+node --test tests/card.test.mjs
+```
+
+Tests cover player-safe session association, Steam presence, offline toggling,
+artwork fallback and provenance, Steam lookup throttling/title matching,
+voice-group sorting, update filtering, and editor config preservation.
+
+For an optional real-browser smoke test, serve the repository with
+`python3 -m http.server 8000` and open `http://localhost:8000/tests/browser.html`.
+The isolated test page imports Lit from esm.sh; this development-only test needs
+internet access and does not connect to Home Assistant or save dashboard changes.
 
 ## License
 

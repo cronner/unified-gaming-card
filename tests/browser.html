@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Gaming card browser checks</title>
+<style>body { font: 16px sans-serif; max-width: 760px; margin: auto; --primary-text-color:#222; --card-background-color:#fff; --divider-color:#bbb; --primary-color:#168; --secondary-text-color:#555; }</style>
+<div id="result">RUNNING</div>
+<script type="module">
+import {LitElement, html, css} from 'https://esm.sh/lit@3.3.1';
+LitElement.prototype.html = html;
+LitElement.prototype.css = css;
+customElements.define('ha-panel-lovelace', class extends LitElement {});
+try {
+  await import('../unified-gaming-card.js');
+  const Card = customElements.get('unified-gaming-card');
+  const editor = Card.getConfigElement();
+  editor.hass = {states: {'sensor.test': {state:'online', attributes:{}}}};
+  editor.setConfig({type:'custom:unified-gaming-card', users:[{name:'Test',steam:'sensor.test',extra:'keep'}], image_source:'standard', future_option:42});
+  document.body.append(editor);
+  await editor.updateComplete;
+  if (editor.shadowRoot.querySelector('select').value !== 'standard') throw Error('editor select does not show configured value');
+  let changed;
+  editor.addEventListener('config-changed', event => changed = event.detail.config);
+  const title = editor.shadowRoot.querySelector('input');
+  title.value = 'Changed title'; title.dispatchEvent(new Event('change'));
+  await editor.updateComplete;
+  if (changed.title !== 'Changed title' || changed.future_option !== 42 || changed.users[0].extra !== 'keep') throw Error('editor loses config');
+  const select = editor.shadowRoot.querySelector('select'); select.value = 'auto'; select.dispatchEvent(new Event('change'));
+  await editor.updateComplete;
+  if (changed.image_source !== 'auto') throw Error('image source event');
+  editor.shadowRoot.querySelectorAll('button')[1].click();
+  await editor.updateComplete;
+  if (changed.users.length !== 2) throw Error('add user');
+  const card = new Card(); card.setConfig({users:[{name:'Test', steam:'sensor.test'}], hide_offline:true, game_images:{ARK:'/local/missing.png'}});
+  card.hass = {states:{'sensor.test':{state:'busy', attributes:{game:'ARK'}}}};
+  document.body.append(card); await card.updateComplete;
+  card._handleAction(card._entities[0]); await card.updateComplete;
+  if (!card.shadowRoot.querySelector('dialog')?.open) throw Error('popup not open');
+  if (!card.shadowRoot.textContent.includes('Billedkilde')) throw Error('popup source missing');
+  card._closeDetails(); await card.updateComplete;
+  document.querySelector('#result').textContent = 'PASS: real Lit editor input/select/add-player/config preservation and card popup';
+} catch (error) { document.querySelector('#result').textContent = 'FAIL: ' + error.stack; }
+</script></html>

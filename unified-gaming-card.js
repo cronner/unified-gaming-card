@@ -1,3 +1,4 @@
+// Unified Gaming Card v1.4.0
 if (!customElements.get("ha-panel-lovelace")) {
   await customElements.whenDefined("ha-panel-lovelace");
 }
@@ -10,6 +11,11 @@ const css = LitElement.prototype.css;
 class UnifiedGamingCard extends LitElement {
   static _steamCache = new Map();
   static _fetching = new Set();
+  static _lookupListeners = new Set();
+
+  static getConfigElement() {
+    return document.createElement("unified-gaming-card-editor");
+  }
 
   static get properties() {
     return {
@@ -45,22 +51,59 @@ class UnifiedGamingCard extends LitElement {
       voice_status_style: "inline",
       view_mode: "grid",
       image_source: "auto",
+      game_images: {},
     };
   }
 
   setConfig(config) {
+    if (!Array.isArray(config.users) || config.users.some(user => !user || typeof user !== "object")) {
+      throw new Error("users must be a list of player profiles");
+    }
+    if (config.users.some(user => user.session_entities != null && !Array.isArray(user.session_entities))) {
+      throw new Error("session_entities must be a list of entity IDs");
+    }
+    if (config.game_images != null && (typeof config.game_images !== "object" || Array.isArray(config.game_images) ||
+        Object.values(config.game_images).some(url => typeof url !== "string"))) {
+      throw new Error("game_images must map game titles to image URLs");
+    }
     if (!["auto", "standard"].includes(config.image_source ?? "auto")) {
       throw new Error('image_source must be "auto" or "standard"');
     }
     this._closeDetails();
     this._sessionObservations.clear();
     this._imageFallbacks.clear();
+    this._relevantStates = null;
+    this._hideOffline = config.hide_offline === true || config.show_offline === false;
     this.config = config;
     if (this._hass) this.hass = this._hass;
   }
 
   set hass(hass) {
     this._hass = hass;
+    // One shared index per HA update; unrelated entity updates do not rebuild players.
+    const prefixes = (this.config?.users || []).flatMap(profile => [profile.discord, profile.xbox].filter(Boolean));
+    const direct = new Set((this.config?.users || []).flatMap(profile => [profile.discord, profile.xbox,
+      ...(Array.isArray(profile.steam) ? profile.steam : [profile.steam]), ...(profile.session_entities || [])].filter(Boolean)));
+    const relevant = new Map();
+    const discord = new Map(prefixes.map(prefix => [prefix, []]));
+    const gaming = [];
+    for (const [id, state] of Object.entries(hass.states)) {
+      const gs = id.startsWith("sensor.gaming_status_");
+      const matches = prefixes.filter(prefix => id.startsWith(prefix + "_") ||
+        (prefix.startsWith("binary_sensor.") && id.split(".")[1]?.startsWith(prefix.split(".")[1] + "_")));
+      if (gs || direct.has(id) || matches.length) relevant.set(id, state);
+      if (gs) gaming.push([id, state]);
+      for (const prefix of matches) discord.get(prefix).push([id, state]);
+    }
+    const previous = this._relevantStates;
+    const same = previous && previous.size === relevant.size && [...relevant].every(([id, state]) => previous.get(id) === state);
+    const zone = hass.config?.time_zone;
+    const zoneChanged = zone !== this._timeZone;
+    this._timeZone = zone;
+    if (same) { if (zoneChanged) this.requestUpdate(); return; }
+    this._relevantStates = relevant;
+    this._discordIndex = discord;
+    this._gamingIndex = gaming;
     this._entities = this._buildEntities(hass);
     this._checkSteamFallbacks(this._entities);
     this._syncSessionTimer();
@@ -69,11 +112,14 @@ class UnifiedGamingCard extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    UnifiedGamingCard._lookupListeners.add(this);
+    this._checkSteamFallbacks(this._entities || []);
     this._syncSessionTimer();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    UnifiedGamingCard._lookupListeners.delete(this);
     clearInterval(this._sessionTimer);
     this._sessionTimer = null;
     this._closeDetails();
@@ -153,7 +199,7 @@ class UnifiedGamingCard extends LitElement {
           entry.discord_avatar = baseState.attributes?.entity_picture || null;
 
           const prefix = profile.discord;
-          for (const [entityId, state] of Object.entries(hass.states)) {
+          for (const [entityId, state] of (this._discordIndex?.get(prefix) || Object.entries(hass.states))) {
             if (entityId === prefix || !entityId.startsWith(prefix + "_")) continue;
             const suffix = entityId.slice(prefix.length + 1);
             if (suffix === "game") entry.discord_game = state.state !== "unknown" && state.state !== "None" ? state.state : null;
@@ -207,7 +253,7 @@ class UnifiedGamingCard extends LitElement {
         if (steamState) {
           entry.steam_entities.push(steamState);
           const rawState = steamState.state;
-          const stateMap = { online: "online", away: "idle", snooze: "dnd", offline: "offline" };
+          const stateMap = { online: "online", busy: "dnd", looking_to_play: "online", looking_to_trade: "online", away: "idle", snooze: "dnd", offline: "offline" };
           entry.steam_states.push(stateMap[rawState] || "offline");
           entry.steam_avatars.push(steamState.attributes?.entity_picture || null);
           const game = steamState.attributes?.game || null;
@@ -306,13 +352,9 @@ class UnifiedGamingCard extends LitElement {
     let ids = [...configured];
     let result = null;
 
-    // Auto-discover gaming_status sensors when session_entities is not configured.
-    if (!ids.length && entry.merged_game) {
-      const target = entry.merged_game.game.toLowerCase();
-      for (const [eid, s] of Object.entries(hass.states)) {
-        if (!eid.startsWith("sensor.gaming_status_")) continue;
-        if (s.attributes?.current_game?.toLowerCase() === target) ids.push(eid);
-      }
+    // A shared game title does not identify a player. Only explicitly linked sensors count.
+    if (!ids.length && profile.xbox?.startsWith("sensor.gaming_status_")) {
+      ids.push(profile.xbox);
     }
 
     for (const id of ids) {
@@ -326,7 +368,7 @@ class UnifiedGamingCard extends LitElement {
       this._sessionObservations.set(key, { start: attrs.play_start_time, game: attrs.current_game, stale });
       if (stale || !entry.merged_game || entry.merged_status.status === "offline" ||
           !sensor || ["unknown", "unavailable", "offline"].includes(sensor.state.toLowerCase()) ||
-          attrs.timer_status !== "Running" || attrs.current_game !== entry.merged_game.game) continue;
+          attrs.timer_status !== "Running" || this._artTitle(attrs.current_game) !== this._artTitle(entry.merged_game.game)) continue;
       const start = this._timestamp(attrs.play_start_time);
       if (start && !result) result = start;
     }
@@ -439,23 +481,35 @@ class UnifiedGamingCard extends LitElement {
     ];
     let source = null;
     let candidates = [];
+    const sources = {};
+    for (const [game, image] of Object.entries(this.config.game_images || {})) {
+      const url = matches(game) ? this._imageUrl(image) : null;
+      if (url) { candidates.push(url); sources[url] = "custom"; source = "custom"; }
+    }
     // Keep every matching native candidate, with supplied art before derived heroes.
     for (const [name, urls] of groups) {
       const valid = urls.map(url => this._imageUrl(url)).filter(Boolean);
-      if (valid.length) { source ||= name; candidates.push(...valid); }
+      if (valid.length) {
+        source ||= name;
+        candidates.push(...valid);
+        for (const url of valid) sources[url] ||= name;
+      }
     }
     if (this.config.image_source !== "standard" && title) {
       const artwork = [];
-      for (const [id, sensor] of Object.entries(hass?.states || {})) {
+      for (const [id, sensor] of (this._gamingIndex || Object.entries(hass?.states || {}))) {
         if (!id.startsWith("sensor.gaming_status_") || ["unknown", "unavailable"].includes(sensor.state?.toLowerCase())) continue;
         const attrs = sensor.attributes || {};
         if (this._artTitle(attrs.current_game) !== title) continue;
         artwork.push(...[attrs.game_hero_art, attrs.game_cover_art].map(url => this._imageUrl(url)).filter(Boolean));
       }
-      if (artwork.length) { candidates.push(...artwork); source ||= "gaming_status"; }
+      if (artwork.length) {
+        candidates.push(...artwork); source ||= "gaming_status";
+        for (const url of artwork) sources[url] ||= "gaming_status";
+      }
     }
     candidates = [...new Set(candidates)];
-    return candidates.length ? { hero: candidates[0], header: candidates[1] || candidates[0], large: candidates[2] || candidates[0], candidates, source } : null;
+    return candidates.length ? { hero: candidates[0], header: candidates[1] || candidates[0], large: candidates[2] || candidates[0], candidates, source, sources } : null;
   }
 
   _backgroundImage(entry) {
@@ -557,11 +611,14 @@ class UnifiedGamingCard extends LitElement {
       const game = entry.merged_game;
       if (!game) continue;
 
-      const cacheKey = game.game.toLowerCase().trim();
+      const cacheKey = this._artTitle(game.game);
       if (UnifiedGamingCard._steamCache.has(cacheKey)) {
         const cached = UnifiedGamingCard._steamCache.get(cacheKey);
-        if (cached) this._applySteamImages(entry, cached);
-        continue;
+        if (cached.expires > Date.now()) {
+          if (cached.url) this._applySteamImages(entry, cached.url);
+          continue;
+        }
+        UnifiedGamingCard._steamCache.delete(cacheKey);
       }
       if (!UnifiedGamingCard._fetching.has(cacheKey)) {
         this._fetchSteamImages(game.game, cacheKey);
@@ -580,26 +637,34 @@ class UnifiedGamingCard extends LitElement {
 
   async _fetchSteamImages(gameName, cacheKey) {
     UnifiedGamingCard._fetching.add(cacheKey);
+    // Failures and empty/ambiguous results receive a ten-minute negative cache.
+    let cached = { url: null, expires: Date.now() + 600000 };
     try {
       const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(gameName)}&l=english&cc=US`;
-      const resp = await fetch(url);
+      const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
       if (!resp.ok) return;
       const data = await resp.json();
       if (!data.items || data.items.length === 0) return;
-      const appId = data.items[0].id;
+      const matches = data.items.filter(item => this._artTitle(item.name) === cacheKey && /^[1-9]\d*$/.test(String(item.id)));
+      if (matches.length !== 1) return;
+      const appId = matches[0].id;
       const baseUrl = `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}`;
-      UnifiedGamingCard._steamCache.set(cacheKey, baseUrl);
-      this._checkSteamFallbacks(this._entities || []);
-      this.requestUpdate();
-    } catch (e) {
-      UnifiedGamingCard._steamCache.set(cacheKey, null);
+      cached = { url: baseUrl, expires: Date.now() + 86400000 };
+    } catch (_) {
+      // Network/CORS/timeout failures use the same bounded negative cache.
     } finally {
+      UnifiedGamingCard._steamCache.set(cacheKey, cached);
+      while (UnifiedGamingCard._steamCache.size > 200) UnifiedGamingCard._steamCache.delete(UnifiedGamingCard._steamCache.keys().next().value);
       UnifiedGamingCard._fetching.delete(cacheKey);
+      for (const card of new Set([this, ...UnifiedGamingCard._lookupListeners])) {
+        card._checkSteamFallbacks(card._entities || []);
+        card.requestUpdate();
+      }
     }
   }
 
   _filterByStatus(entities) {
-    const hideOffline = this.config.hide_offline || this._hideOffline || (this.config.show_offline === false);
+    const hideOffline = this._hideOffline;
     if (!hideOffline) return entities;
     return entities.filter(e => e.merged_status.status !== "offline" || (e.discord_voice && e.discord_voice !== "unknown"));
   }
@@ -679,6 +744,11 @@ class UnifiedGamingCard extends LitElement {
     if (!entry) return "";
     const has = value => typeof value === "string" && value.trim() && !["unknown", "unavailable", "none"].includes(value.toLowerCase());
     const elapsed = this._sessionElapsed(entry);
+    const background = this._backgroundImage(entry);
+    const imageUrl = background.candidates[background.index];
+    const imageSource = entry.merged_images?.sources?.[imageUrl] || entry.merged_images?.source;
+    const sourceLabel = { custom: "Eget billede", discord: "Discord", xbox: "Xbox", steam: "Steam",
+      steam_lookup: "Steam-søgning", gaming_status: "Gaming Status", watching: "Discord video", spotify: "Spotify" };
     const lastOnline = value => {
       const time = this._timestamp(value);
       return time ? new Intl.DateTimeFormat("da-DK", {
@@ -706,6 +776,8 @@ class UnifiedGamingCard extends LitElement {
           <dt>${platform.name}</dt><dd>${platform.state === "unavailable" ? "Utilgængelig" : platform.state === "unknown" ? "Ukendt" : this._stateLabel(({ away: "idle", snooze: "dnd" })[platform.state] || platform.state)}
             ${has(platform.game) ? html`<div>${platform.game}</div>` : ""}
             ${platform.last ? html`<div class="details-note">Sidst online: ${platform.last}</div>` : ""}</dd>`)}
+          <dt>Billedkilde</dt><dd>${imageUrl ? html`${sourceLabel[imageSource] || imageSource}
+            <a href=${imageUrl} target="_blank" rel="noopener noreferrer">Åbn billede</a>` : "Intet tilgængeligt billede"}</dd>
           ${has(entry.discord_voice) ? html`<dt>Voice</dt><dd>${entry.discord_voice}
             ${has(entry.discord_voice_duration) ? html`<div>${entry.discord_voice_duration}</div>` : ""}
             ${entry.discord_voice_mute ? html`<div>Mikrofon slået fra</div>` : ""}
@@ -789,7 +861,7 @@ class UnifiedGamingCard extends LitElement {
       return html`<ha-card><div class="empty">Ingen brugere fundet</div></ha-card>`;
     }
 
-    const hideOffline = this.config.hide_offline || this._hideOffline || (this.config.show_offline === false);
+    const hideOffline = this._hideOffline;
     const showToggle = this.config.show_toggle !== false;
     const maxOnline = this.config.max_online || 0;
     const maxOffline = this.config.max_offline || 0;
@@ -841,7 +913,7 @@ class UnifiedGamingCard extends LitElement {
           ? html`${Array.from(voiceChannels.entries()).map(([channel, data]) => html`
               <div class="status-category">${channel} (${data.users.length})${data.duration ? html`<span class="voice-duration"> · ${data.duration}</span>` : ""}</div>
               <div class="user-grid ${compact ? "compact" : ""} ${viewMode === "list" ? "list-view" : ""}">
-                ${data.users.map(e => this._renderUserItem(e))}
+                ${[...data.users].sort(gamingFirst).map(e => this._renderUserItem(e))}
               </div>`)}`
           : ""}
         ${voiceChannels.size > 0
@@ -1207,6 +1279,104 @@ class UnifiedGamingCard extends LitElement {
   }
 }
 
+class UnifiedGamingCardEditor extends LitElement {
+  static get properties() { return { hass: {}, _config: { state: true }, _error: { state: true } }; }
+
+  setConfig(config) { this._config = { ...config }; this._error = ""; }
+
+  _emit(config) {
+    this._config = config;
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }));
+  }
+
+  _field(key, value) { this._emit({ ...this._config, [key]: value }); }
+
+  _user(index, key, value) {
+    const users = (this._config.users || []).map(user => ({ ...user }));
+    if (value === "" || (Array.isArray(value) && !value.length)) delete users[index][key];
+    else users[index][key] = value;
+    this._field("users", users);
+  }
+
+  _image(index, key, value) {
+    const entries = Object.entries(this._config.game_images || {});
+    if (key === 0 && entries.some(([name], i) => i !== index && name === value)) {
+      this._error = "Spilnavnet findes allerede. Vælg et andet navn.";
+      return;
+    }
+    this._error = "";
+    entries[index][key] = value;
+    this._field("game_images", Object.fromEntries(entries));
+  }
+
+  _select(key, label, values, fallback) {
+    return html`<label>${label}<select .value=${this._config[key] ?? fallback}
+      @change=${event => this._field(key, event.target.value)}>
+      ${values.map(([value, text]) => html`<option value=${value} ?selected=${value === (this._config[key] ?? fallback)}>${text}</option>`)}</select></label>`;
+  }
+
+  render() {
+    if (!this._config) return html``;
+    const list = value => Array.isArray(value) ? value.join("\n") : value || "";
+    const parse = value => value.split(/[\n,]+/).map(id => id.trim()).filter(Boolean);
+    return html`<div class="editor">
+      <label>Titel<input .value=${this._config.title || ""} @change=${e => this._field("title", e.target.value)}></label>
+      <div class="grid">
+        ${this._select("image_source", "Billedkilder", [["auto", "Platforme først, Gaming Status som backup"], ["standard", "Kun platforme (uden Gaming Status)"]], "auto")}
+        ${this._select("voice_status_style", "Voice-ikoner", [["inline", "Efter navn"], ["overlay", "På avatar"]], "inline")}
+        ${this._select("view_mode", "Layout", [["grid", "Gitter"], ["list", "Liste"]], "grid")}
+        ${this._select("sort_by", "Sortering", [["status", "Status"], ["name", "Navn"], ["game", "Spil"]], "status")}
+        ${this._select("click_action", "Klik på spiller", [["popup", "Spillerdetaljer"], ["more-info", "Entity-detaljer"], ["navigate", "Navigation"], ["toggle", "Skift entity"], ["none", "Ingen handling"]], "popup")}
+      </div>
+      ${["navigate", "toggle"].includes(this._config.click_action) ? html`<label>Mål (sti eller entity-ID)
+        <input .value=${this._config.click_action_target || ""} @change=${e => this._field("click_action_target", e.target.value)}></label>` : ""}
+      ${[["hide_offline", "Skjul offline ved åbning", false], ["show_toggle", "Vis offline-knap", true], ["compact_mode", "Kompakt visning", false]].map(([key, label, fallback]) => html`
+        <label class="check"><input type="checkbox" .checked=${this._config[key] ?? fallback}
+          @change=${e => this._field(key, e.target.checked)}>${label}</label>`)}
+      <h3>Spillere</h3>
+      <p>Vælg entity-ID'er. Sessionstid kræver Gaming Status-sensorer for netop denne spiller.</p>
+      <datalist id="entities">${Object.keys(this.hass?.states || {}).filter(id => /^(sensor|binary_sensor)\./.test(id))
+        .map(id => html`<option value=${id}></option>`)}</datalist>
+      ${(this._config.users || []).map((user, index) => html`<details>
+        <summary>${user.name || `Spiller ${index + 1}`}</summary>
+        <label>Navn<input .value=${user.name || ""} @change=${e => this._user(index, "name", e.target.value)}></label>
+        ${[["discord", "Discord-entity"], ["xbox", "Xbox-entity"]].map(([key, label]) => html`<label>${label}
+          <input list="entities" .value=${user[key] || ""} @change=${e => this._user(index, key, e.target.value.trim())}></label>`)}
+        <label>Steam-entities (ét ID pr. linje)<textarea rows="2" .value=${list(user.steam)}
+          @change=${e => { const ids = parse(e.target.value); this._user(index, "steam", ids.length === 1 ? ids[0] : ids); }}></textarea></label>
+        <label>Session-sensorer (ét ID pr. linje)<textarea rows="2" .value=${list(user.session_entities)}
+          @change=${e => this._user(index, "session_entities", parse(e.target.value))}></textarea></label>
+        <button type="button" @click=${() => this._field("users", this._config.users.filter((_, i) => i !== index))}>Fjern spiller</button>
+      </details>`)}
+      <button type="button" @click=${() => this._field("users", [...(this._config.users || []), { name: "Ny spiller" }])}>Tilføj spiller</button>
+      <h3>Egne spilbilleder</h3>
+      ${this._error ? html`<p role="alert">${this._error}</p>` : ""}
+      <p>Prøves først. Brug en HTTPS-URL eller /local/sti. Fejler billedet, bruges de normale billedkilder.</p>
+      ${Object.entries(this._config.game_images || {}).map(([game, url], index) => html`<div class="image-row">
+        <label>Spilnavn<input .value=${game} @change=${e => this._image(index, 0, e.target.value)}></label>
+        <label>Billed-URL<input .value=${url} @change=${e => this._image(index, 1, e.target.value)}></label>
+        <button type="button" @click=${() => this._field("game_images", Object.fromEntries(Object.entries(this._config.game_images).filter((_, i) => i !== index)))}>Fjern billede</button>
+      </div>`)}
+      <button type="button" ?disabled=${Object.hasOwn(this._config.game_images || {}, "")}
+        @click=${() => this._field("game_images", { ...this._config.game_images, "": "" })}>Tilføj spilbillede</button>
+      <p>Øvrige YAML-indstillinger bevares, når du redigerer her.</p>
+    </div>`;
+  }
+
+  static get styles() { return css`
+    .editor { display: grid; gap: 12px; color: var(--primary-text-color); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+    label { display: grid; gap: 5px; margin: 8px 0; }
+    input, select, textarea, button { font: inherit; color: var(--primary-text-color); background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; padding: 9px; box-sizing: border-box; min-width: 0; }
+    input, select, textarea { width: 100%; }
+    .check { display: flex; align-items: center; } .check input { width: auto; }
+    details, .image-row { border: 1px solid var(--divider-color); border-radius: 8px; padding: 12px; }
+    summary, button { cursor: pointer; } p { color: var(--secondary-text-color); margin: 0; font-size: 0.9em; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--primary-color); }
+  `; }
+}
+
+customElements.define("unified-gaming-card-editor", UnifiedGamingCardEditor);
 customElements.define("unified-gaming-card", UnifiedGamingCard);
 
 window.customCards = window.customCards || [];
