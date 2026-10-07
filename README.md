@@ -18,7 +18,7 @@ Custom [Home Assistant](https://www.home-assistant.io/) Lovelace card that combi
 - Voice status icons — mute, deaf, stream, and webcam indicators on avatars (overlay or inline)
 - Voice channel fallback — reads from base entity attributes when sub-entity is unknown
 - Offline users in voice calls get red avatar highlight
-- **Session time** — shows elapsed play time per player from gaming_status `play_start_time`
+- **Session time** — shows elapsed play time per player from gaming_status `play_start_time`, matched safely by account
 - **Player details popup** — click a player for platform status, game, session time, voice info, and last-online
 - Automatic game artwork with cascade fallback (local gaming_status cache, Steam lookup)
 - Works fully **without** the gaming_status integration installed
@@ -60,13 +60,18 @@ select Discord/Xbox entity IDs, enter one or more Steam and session entity IDs,
 choose artwork behavior and voice icon position, and set custom images per game.
 Advanced YAML fields not shown in the editor are preserved.
 
+### Upgrading from v1.4.0
+
+No changes needed. Session time is matched to each player by account again, so every
+player with a Gaming Status account shows their own elapsed time with no configuration.
+`session_entities` is still supported and still takes priority.
+
 ### Upgrading from v1.3.0
 
 Session discovery by game title was unsafe: two players playing the same game
-could receive the same player's start time. Set `session_entities` for each player
-whose session time you want to show. An explicitly configured Gaming Status Xbox
-sensor can also provide its own session. Without a safe player link, the timer
-is omitted; the card, platform status, and artwork still work normally.
+could receive the same player's start time. From v1.4.1 sessions are matched by
+account instead, which is safe. `session_entities` remains available when you want
+to be explicit.
 
 ### Users
 
@@ -130,15 +135,16 @@ users:
 | `steam` | string/list | No | Steam entity ID or list of Steam entity IDs |
 | `session_entities` | list | No | Explicit Gaming Status sensors belonging to this player, in priority order |
 
-At least one of `discord`, `xbox`, or `steam` must be provided. `session_entities` is optional; no session is borrowed from other players by matching a game title.
+At least one of `discord`, `xbox`, or `steam` must be provided. `session_entities` is optional; no session is ever borrowed from another player.
 
 ## Session Time
 
 The card shows each player's elapsed play time from [gaming_status](https://github.com/3rob3/gaming-steam-status) `play_start_time` attributes, shown next to the game name and in the details popup.
 
-- Link the player's own Gaming Status sensors with `session_entities`.
+- Normally nothing is needed: a Gaming Status sensor is matched to a player by account.
+- Link sensors explicitly with `session_entities` to override the priority order.
 - An explicitly configured `xbox: sensor.gaming_status_...` can supply its own session if no session list is set.
-- If no valid linked session is available, no elapsed time is shown.
+- If no valid session for that account is available, no elapsed time is shown.
 
 ```yaml
 users:
@@ -150,6 +156,23 @@ users:
 ```
 
 Session time is only shown when the linked sensor reports `timer_status: Running`, its game matches the displayed game, the player is online, and its timestamp is valid. Title matching ignores case, extra whitespace, and `™`/`®`. Stopped/paused sessions, unknown/unavailable sensors, and invalid timestamps are excluded. The integration's recorded session start is not a guarantee of active play time.
+
+### How a player is matched
+
+Matching by game title is unsafe: two players playing the same game would share one
+start time. The card therefore matches a Gaming Status sensor to a player by **account**:
+
+1. A player is identified by the account picture on their own Discord and Steam sensors.
+   That picture names the account, so two different players never match the same sensor.
+2. When one Gaming Status sensor matches, the card also accepts the other platforms of
+   that same account — so an active Xbox session is found even though Xbox gamerpics and
+   aggregated sensors carry no comparable picture.
+3. Nothing is ever guessed. An avatar shared by two accounts, or an account claimed by two
+   players, is skipped rather than attributed, and game titles never attribute a session.
+
+This means session time works for every player with a Gaming Status account without any
+configuration, while remaining safe. Set `session_entities` if you want to control priority
+yourself.
 
 ## Game Artwork
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.4.1
+
+- Restore session time for every player without configuration: a Gaming Status sensor is
+  now matched to a player by account, not by game title. Discord and Steam account
+  pictures name the account, so a shared avatar is a reliable link where a shared game
+  title was not.
+- Once one platform of an account is matched, every platform of that same account is
+  used, so an active Xbox session is found even when only the Steam or Discord sensor
+  carries a comparable picture.
+- Any `session_entities` you already set are kept exactly as written; matching only adds
+  platforms the list left out.
+- Never guess: an avatar shared by two accounts or claimed by two players is ignored,
+  Xbox gamerpic and Discord default avatars carry no identity, and game titles are never
+  used to attribute a session.
+
+### Migration
+
+None. Nothing to change in your configuration.
+
 ## v1.4.0
 
 - Fix session attribution: only explicitly linked player sensors supply session time;

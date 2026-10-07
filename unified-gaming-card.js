@@ -32,6 +32,8 @@ class UnifiedGamingCard extends LitElement {
     this._selectedPlayer = null;
     this._sessionObservations = new Map();
     this._imageFallbacks = new Map();
+    this._sessionCache = null;
+    this._sessionCacheKey = null;
   }
 
   static getStubConfig() {
@@ -71,6 +73,8 @@ class UnifiedGamingCard extends LitElement {
     }
     this._closeDetails();
     this._sessionObservations.clear();
+    this._sessionCache = null;
+    this._sessionCacheKey = null;
     this._imageFallbacks.clear();
     this._relevantStates = null;
     this._hideOffline = config.hide_offline === true || config.show_offline === false;
@@ -104,6 +108,8 @@ class UnifiedGamingCard extends LitElement {
     this._relevantStates = relevant;
     this._discordIndex = discord;
     this._gamingIndex = gaming;
+    this._sessionCache = null;
+    this._sessionCacheKey = null;
     this._entities = this._buildEntities(hass);
     this._checkSteamFallbacks(this._entities);
     this._syncSessionTimer();
@@ -347,12 +353,73 @@ class UnifiedGamingCard extends LitElement {
     return Number.isFinite(time) && time > 0 && time <= Date.now() ? time : null;
   }
 
+  _avatarIdentity(value) {
+    // The picture URL of a Discord or Steam account names that account, so two
+    // players can only share an identity when it is genuinely the same account.
+    if (typeof value !== "string" || !value) return null;
+    try {
+      const url = new URL(value, "https://localhost");
+      const path = url.pathname.replace(/\.(?:png|jpe?g|webp|gif)$/i, "");
+      const discord = path.match(/^\/avatars\/(\d{15,25})\/([a-f0-9]{16,})$/i);
+      if (discord) return `discord:${discord[1]}:${discord[2].toLowerCase()}`;
+      const steam = path.match(/^\/([a-f0-9]{32,64})(?:_[a-z0-9]+)?$/i);
+      if (steam && /^(?:[a-z0-9-]+\.)*steamstatic\.com$|^(?:[a-z0-9-]+\.)*steamcdn-a\.akamaihd\.net$/i.test(url.hostname)) {
+        return `steam:${steam[1].toLowerCase()}`;
+      }
+    } catch (_) { /* No comparable account identity in this picture. */ }
+    return null;
+  }
+
+  _gamingSlugs(hass) {
+    const index = this._gamingIndex || Object.entries(hass?.states || {});
+    const siblings = new Map();
+    const byIdentity = new Map();
+    const shared = new Set();
+    for (const [id, state] of index) {
+      if (typeof id !== "string" || !id.startsWith("sensor.gaming_status_")) continue;
+      const slug = id.slice("sensor.gaming_status_".length).replace(/_(?:steam|discord|xbox|pc|master)$/, "");
+      if (!slug) continue;
+      if (!siblings.has(slug)) siblings.set(slug, []);
+      siblings.get(slug).push(id);
+      // Only the account platforms carry a comparable picture, never the aggregated ones.
+      const identity = this._avatarIdentity(state?.attributes?.entity_picture);
+      if (!identity) continue;
+      if (byIdentity.has(identity) && byIdentity.get(identity) !== slug) shared.add(identity);
+      else byIdentity.set(identity, slug);
+    }
+    for (const identity of shared) byIdentity.delete(identity);
+    return { siblings, byIdentity };
+  }
+
+  _sessionCandidates(profile, hass) {
+    const index = this._gamingIndex;
+    const key = index ?? hass?.states;
+    if (this._sessionCache && this._sessionCacheKey === key) return this._sessionCache;
+    const profiles = this.config?.users || [];
+    const { siblings, byIdentity } = this._gamingSlugs(hass);
+    const slugs = profiles.map(profile => {
+      const identities = [profile.discord, profile.steam, profile.xbox].flatMap(list => (Array.isArray(list) ? list : [list]))
+        .filter(id => typeof id === "string")
+        .map(id => this._avatarIdentity(hass?.states?.[id]?.attributes?.entity_picture));
+      return [...new Set(identities.map(identity => byIdentity.get(identity)).filter(Boolean))];
+    });
+    // Two profiles claiming one account is unresolvable, so neither may use it.
+    const owners = new Map();
+    slugs.forEach((claimed, index2) => claimed.forEach(slug => owners.set(slug, owners.has(slug) ? null : index2)));
+    this._sessionCache = slugs.map((claimed, index2) => claimed.filter(slug => owners.get(slug) === index2)
+      .flatMap(slug => siblings.get(slug) || []));
+    this._sessionCacheKey = key;
+    return this._sessionCache;
+  }
+
   _sessionStart(profile, entry, hass) {
     const configured = Array.isArray(profile.session_entities) ? profile.session_entities : [];
-    let ids = [...configured];
     let result = null;
 
-    // A shared game title does not identify a player. Only explicitly linked sensors count.
+    // A shared game title does not identify a player, so only sensors tied to
+    // this account count. Explicit links are kept as written, and matching the
+    // account itself adds any platform the list happened to leave out.
+    let ids = [...new Set([...configured, ...(this._sessionCandidates(profile, hass)[entry.profile_index] || [])])];
     if (!ids.length && profile.xbox?.startsWith("sensor.gaming_status_")) {
       ids.push(profile.xbox);
     }

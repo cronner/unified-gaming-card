@@ -17,8 +17,11 @@ function setup() {
 }
 const state = (value, attributes = {}) => ({ state: value, attributes });
 const start = new Date(Date.now() - 3600000).toISOString();
+const gsWith = (picture, game = 'ARK') => state(game, { current_game: game, play_start_time: start, timer_status: 'Running', game_hero_art: 'http://private-host/local/gaming_status_cache/ark.png?v=1', entity_picture: picture });
 const gs = () => state('ARK', { current_game: 'ARK', play_start_time: start, timer_status: 'Running', game_hero_art: 'http://private-host/local/gaming_status_cache/ark.png?v=1' });
-const entry = () => ({ profile_index: 0, name: 'Player', merged_status: { status: 'online' }, merged_game: { game: 'ARK' },
+const steamAvatar = hash => `https://avatars.steamstatic.com/${hash}_full.jpg`;
+const discordAvatar = (id, hash) => `https://cdn.discordapp.com/avatars/${id}/${hash}.png?size=1024`;
+const entry = (index = 0) => ({ profile_index: index, name: 'Player', merged_status: { status: 'online' }, merged_game: { game: 'ARK' },
   discord_game: null, xbox_game: null, discord_game_images: {}, xbox_game_images: {}, steam_game_images: [], steam_games: [], steam_entities: [] });
 
 test('session does not borrow a different player playing the same game', () => {
@@ -36,6 +39,58 @@ test('explicit session mapping matches trademark spelling and excludes paused/wr
 test('direct Gaming Status Xbox mapping remains usable without discovery', () => {
   const { card } = setup();
   assert.equal(card._sessionStart({ xbox: 'sensor.gaming_status_me_xbox' }, entry(), { states: { 'sensor.gaming_status_me_xbox': gs() } }), Date.parse(start));
+});
+test('session is discovered by matching account avatar, not by game title', () => {
+  const { card } = setup(); card.config = { users: [{ name: 'Me', steam: 'sensor.me' }] };
+  const mine = 'a'.repeat(40), theirs = 'b'.repeat(40);
+  const hass = { states: { 'sensor.me': state('in-game', { entity_picture: steamAvatar(mine) }),
+    'sensor.gaming_status_me_steam': gsWith(steamAvatar(mine)),
+    'sensor.gaming_status_other_steam': gsWith(steamAvatar(theirs)) } };
+  assert.equal(card._sessionStart({ steam: 'sensor.me' }, entry(), hass), Date.parse(start));
+  card._sessionCache = null;
+  assert.equal(card._sessionStart({ steam: 'sensor.me' }, { ...entry(), profile_index: 1 }, hass), null);
+});
+test('discovered session covers the whole account family, including Xbox', () => {
+  const { card } = setup(); card.config = { users: [{ name: 'Me', discord: 'sensor.discord_user_1' }] };
+  const hash = 'c'.repeat(32);
+  const discord = state('online', { entity_picture: discordAvatar('123456789012345678', hash) });
+  const xbox = gsWith('/api/image_proxy/image.me_gamerpic?token=abc', 'ARK');
+  xbox.attributes.timer_status = 'Running';
+  const hass = { states: { 'sensor.discord_user_1': discord, 'sensor.gaming_status_me_discord': gsWith(discordAvatar('123456789012345678', hash).replace('.png', '.webp')),
+    'sensor.gaming_status_me_xbox': xbox, 'sensor.gaming_status_me_master': gsWith(null) } };
+  assert.equal(card._sessionStart({ discord: 'sensor.discord_user_1' }, entry(), hass), Date.parse(start));
+});
+test('explicit mapping is kept and account matching only adds what it omitted', () => {
+  const { card } = setup(); card.config = { users: [{ name: 'Me', steam: 'sensor.me' }] };
+  const mine = 'd'.repeat(40);
+  const profile = { steam: 'sensor.me', session_entities: ['sensor.gaming_status_me_steam'] };
+  const idle = { states: { 'sensor.me': state('in-game', { entity_picture: steamAvatar(mine) }),
+    'sensor.gaming_status_me_steam': gsWith(steamAvatar(mine), 'ARK'), 'sensor.gaming_status_me_xbox': gsWith('/api/image_proxy/image.me_gamerpic?token=abc') } };
+  idle.states['sensor.gaming_status_me_steam'].attributes.timer_status = 'Stopped (Offline)';
+  // The listed sensor is idle, but the same account's Xbox sensor is running.
+  assert.equal(card._sessionStart(profile, entry(), idle), Date.parse(start));
+  // An explicit list alone keeps working exactly as written.
+  const listed = { states: { 'sensor.gaming_status_me_discord': gs() } };
+  assert.equal(card._sessionStart({ session_entities: ['sensor.gaming_status_me_discord'] }, entry(), listed), Date.parse(start));
+});
+test('an avatar shared by two accounts or two players never yields a session', () => {
+  const shared = 'e'.repeat(40);
+  const ambiguous = { states: { 'sensor.gaming_status_a_steam': gsWith(steamAvatar(shared)), 'sensor.gaming_status_b_steam': gsWith(steamAvatar(shared)) } };
+  const { card } = setup(); card.config = { users: [{ name: 'Me', steam: 'sensor.me' }] };
+  const hass = { ...ambiguous, states: { ...ambiguous.states, 'sensor.me': state('in-game', { entity_picture: steamAvatar(shared) }) } };
+  assert.equal(card._sessionStart({ steam: 'sensor.me' }, entry(), hass), null);
+  const { card: second } = setup(); second.config = { users: [{ name: 'A', steam: 'sensor.a' }, { name: 'B', steam: 'sensor.b' }] };
+  const distinct = { states: { 'sensor.a': state('in-game', { entity_picture: steamAvatar(shared) }),
+    'sensor.b': state('in-game', { entity_picture: steamAvatar(shared) }), 'sensor.gaming_status_a_steam': gsWith(steamAvatar(shared)) } };
+  assert.equal(second._sessionStart({ steam: 'sensor.a' }, entry(0), distinct), null);
+  assert.equal(second._sessionStart({ steam: 'sensor.b' }, entry(1), distinct), null);
+});
+test('only real account pictures produce an identity', () => {
+  const { card } = setup();
+  assert.equal(card._avatarIdentity('/api/image_proxy/image.me_gamerpic?token=abc'), null);
+  assert.equal(card._avatarIdentity('https://avatars.steamstatic.com/' + 'a'.repeat(40) + '_full.jpg'), 'steam:' + 'a'.repeat(40));
+  assert.equal(card._avatarIdentity('https://example.com/' + 'a'.repeat(40) + '.png'), null);
+  assert.equal(card._avatarIdentity(null), null);
 });
 test('all Steam presence modes are mapped', () => {
   const { card } = setup(); card.config = { users: [{ steam: 'sensor.me' }] };
